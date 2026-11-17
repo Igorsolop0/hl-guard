@@ -1,0 +1,16 @@
+{
+ "coin": "ETH",
+ "leverage": {
+  "type": "cross",
+  "value": 5
+ },
+ "maxTradeSzs": [
+  "190.0",
+  "200.0"
+ ],
+ "availableToTrade": [
+  "90000.0",
+  "95000.0"
+ ],
+ "markPx": "2380.0"
+}

@@ -1,0 +1,10 @@
+[
+  {"tool": "markets", "arguments": {"coins": ["BTC"]}},
+  {"tool": "order_book", "arguments": {"coin": "BTC", "depth": 3}},
+  {"tool": "candles", "arguments": {"coin": "BTC", "interval": "1h", "count": 3}},
+  {"tool": "account", "arguments": {}},
+  {"tool": "positions", "arguments": {}},
+  {"tool": "open_orders", "arguments": {}},
+  {"tool": "fills", "arguments": {"limit": 3}},
+  {"tool": "risk_status", "arguments": {}}
+]

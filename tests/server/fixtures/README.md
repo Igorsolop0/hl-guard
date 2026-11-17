@@ -1,0 +1,1 @@
+These fixtures are synthetic: every order, fill, position, book level, candle, id and time is made up from a seeded generator. meta_and_asset_ctxs.json is a public market listing and holds no account data.

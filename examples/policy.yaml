@@ -1,0 +1,57 @@
+# hl-guard policy. Copy this file to ~/.config/hl-guard/policy.yaml, keep it
+# outside any folder an AI tool can write, and chmod 600 it: hl-guard refuses
+# a file that group or others can write, or that another user owns.
+# Every limit must stay inside the product hard ceiling that
+# `hl-guard policy check <path>` prints next to it.
+
+network: testnet
+coins: [BTC, ETH, SOL]
+
+per_order_usd_max: 20
+total_exposure_usd_max: 100
+# Isolated margin only, up to 5x. Default 1. hl-guard sets the coin to
+# isolated first when no position is open.
+leverage_max: 1
+open_orders_max: 3
+entries_per_day_max: 2
+
+daily_loss_pct_max: 3
+loss_streak_max: 5
+cooldown_s: 3600
+
+# hl-guard checks the stop-loss and take-profit but does NOT place them.
+stop_loss_required: true
+stop_loss_max_pct: 2
+take_profit_max_pct: 5
+
+# An entry's limit price must sit within this percent of the mark. Closes skip
+# the band and face only the close price caps below, so a close passes even
+# when the mark lags or is stale.
+price_band_pct_max: 0.5
+# Entries need a snapshot this fresh, and a mark this fresh for the coin and for
+# every coin held or with a resting opening order. Leverage changes and margin
+# additions need only the snapshot this fresh.
+snapshot_max_age_s: 5
+margin_additions_per_day_max: 3
+# Most USD one margin addition may move to an isolated position. At most
+# per_order_usd_max. Left out, it is 10 or per_order_usd_max if that is lower.
+add_margin_usd_max: 10
+
+# A close sells no lower than close_sell_floor times the last mark (default
+# 0.5, allowed 0.1 to 0.95) and buys no higher than close_buy_cap times it
+# (default 2, allowed 1.05 to 10). A tighter cap can refuse a close in a fast
+# market until the mark updates.
+close_sell_floor: 0.5
+close_buy_cap: 2
+
+# A dead-man scheduleCancel may sit at most this many seconds ahead. Default
+# 86400 (24 h), at most 604800 (7 days). The exchange needs at least 5 s.
+schedule_cancel_max_s: 86400
+
+# Who places an allowed entry. always: you run `hl-guard approve <id>` for
+# each one. {above_usd: N}: an entry waits for you when the exposure after it
+# would be above N USD, N below per_order_usd_max. never: hl-guard places
+# every allowed entry itself and
+# refuses to start without --i-understand-autonomous. Closes and halt never
+# wait.
+approval: always

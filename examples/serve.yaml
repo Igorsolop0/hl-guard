@@ -1,0 +1,53 @@
+# hl-guard serve config. Copy it next to your policy, for example to
+# ~/.config/hl-guard/serve.yaml, and chmod 600 it: hl-guard refuses a config
+# that group or others can write.
+
+# The policy file. A relative path is read from this file's folder.
+policy: policy.yaml
+
+# Where hl-guard keeps its ledger, the HALT flag and the mode file. Create it
+# with mkdir -m 700. It must not be under a temp folder.
+data_dir: ~/.hl-guard
+
+# The public address of the Hyperliquid account the read tools look at.
+account: "0x0000000000000000000000000000000000000000"
+
+# The network is the policy's. Testnet is the default. Mainnet also needs a
+# file named mode in data_dir that says mainnet, and the server must start
+# with --expect-network mainnet.
+
+# Optional. The /info weight hl-guard may spend per minute, from 20 to 600.
+# Hyperliquid allows 1200 per minute per IP. Every client on that IP shares
+# the 1200: other bots, daemons and browser tabs count too. The default 300
+# leaves room for them. Lower it when other clients on the IP read a lot.
+# With an agent key the write tools need at least
+# 44 + max(120, 21 + 20 * open_orders_max): 164 for open_orders_max 3, 465 for 20.
+# That floor buys one entry evaluation per minute, not an entry and the gate
+# pass again after its approval: at the floor the approved order can wait for
+# the next minute, and the fills read after an order goes out can wait for
+# the next call.
+info_weight_per_min: 300
+
+# Optional. The file where hl-guard counts the weight it spent in the last
+# minute. All hl-guard servers that use the same file share one budget. The
+# default is one file per user on this machine:
+#   macOS: ~/Library/Application Support/hl-guard/info-weight.json
+#   Linux: $XDG_STATE_HOME/hl-guard/info-weight.json, or
+#          ~/.local/state/hl-guard/info-weight.json
+# hl-guard creates its folder with mode 700 and refuses a folder that group
+# or others can write.
+# info_budget_file: ~/Library/Application Support/hl-guard/info-weight.json
+
+# Optional. Seconds one /info request may take in total, from 1 to 60.
+info_timeout_s: 10
+
+# Optional. The agent key file that signs orders. hl-guard init creates it,
+# mode 600, and your browser wallet approves it; see docs/quickstart.md.
+# Without it hl-guard serves the read tools only. hl-guard uses the key to
+# trade for the account and never to withdraw. init keeps its folder at mode
+# 700. Keep it out of any folder an AI tool can read.
+# agent_key_file: ~/.hl-guard/agent.key
+
+# Optional. Seconds a proposal waits for `hl-guard approve <id>`, from 10 to
+# 900. Default 120.
+# approval_ttl_s: 120

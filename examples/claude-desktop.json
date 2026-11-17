@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "hl-guard": {
+      "command": "/path/to/uv",
+      "args": [
+        "run",
+        "--directory",
+        "/path/to/hl-guard",
+        "hl-guard",
+        "serve",
+        "--config",
+        "/path/to/your-home/.config/hl-guard/serve.yaml",
+        "--expect-network",
+        "testnet"
+      ]
+    }
+  }
+}
