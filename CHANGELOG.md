@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Docs
+
+- [docs/separate-user.md](docs/separate-user.md): run hl-guard, its key and
+  its ledger under a separate user on macOS or Linux, so that a client with
+  a shell cannot approve its own orders or read the key.
+- [docs/faq.md](docs/faq.md): sub-accounts, a crash after a fill, a stolen
+  agent key, what is tested, who reviewed it, and what the ledger chain
+  catches.
+- README: a risk notice and a "Status and review" section.
+- [RELEASING.md](RELEASING.md) and a release workflow that publishes to PyPI
+  with trusted publishing.
+
 ## 0.1.0
 
 The first release. hl-guard is pre-alpha: test it on the Hyperliquid testnet
