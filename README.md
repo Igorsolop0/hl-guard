@@ -29,7 +29,9 @@ hl-guard also does not:
   `hl-guard approve`.
 - protect you from a client that can run shell commands as your user. Such a
   client can run `hl-guard approve` itself and read the agent key. See
-  [SECURITY.md](SECURITY.md).
+  [SECURITY.md](SECURITY.md), and
+  [run hl-guard under a separate user](docs/separate-user.md) to close that
+  gap.
 - run as a hosted service. It runs on your machine only.
 
 ## What it does
@@ -72,6 +74,8 @@ it at real funds. Expect breaking changes.
 - [Connect a client](docs/clients.md): Claude Desktop, Claude Code and Cursor.
 - [Write a policy](docs/policy.md): every limit and its ceiling.
 - [Threat model](docs/threat-model.md): who can do what, and what stops them.
+- [Separate user](docs/separate-user.md): keep the key and the approval out of
+  reach of a client with a shell.
 
 ## Develop
 

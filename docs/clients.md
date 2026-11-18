@@ -21,7 +21,8 @@ or turn off its hl-guard entry first.
 > Claude Code and Cursor can run shell commands as your user. Such a client
 > can run `hl-guard approve` itself and read the agent key, so it can approve
 > its own orders. Use them with hl-guard only on testnet, or turn off their
-> shell tools, or run hl-guard under a separate user. See
+> shell tools, or run hl-guard under a separate user as in
+> [separate-user.md](separate-user.md). See
 > [threat-model.md](threat-model.md).
 
 ## Fill in the paths

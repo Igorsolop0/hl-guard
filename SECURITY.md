@@ -39,7 +39,8 @@ hl-guard data dir or config.
 To keep approvals and the key out of the client's reach, run the trading
 client without shell tools and without write access to the hl-guard data dir,
 config and policy file, or run hl-guard and its key under a separate user that
-the client cannot reach.
+the client cannot reach. [docs/separate-user.md](docs/separate-user.md) shows
+how to set that up on macOS and Linux.
 
 ## Supported versions
 

@@ -57,6 +57,7 @@ SKIP_REASONS = {
     "needs-ledger",
     "needs-halt",
     "no-balance",
+    "root",
 }
 ZERO_ADDRESS = "0x" + "0" * 40
 
@@ -116,14 +117,30 @@ def commands(text: str) -> Iterator[list[str]]:
 
 
 def hl_guard_argv(argv: list[str], home: Path) -> list[str] | None:
-    if "hl-guard" not in argv:
+    """The arguments after the last ``hl-guard`` or ``…/bin/hl-guard`` in ``argv``."""
+    found = [i for i, arg in enumerate(argv) if arg == "hl-guard" or arg.endswith("/bin/hl-guard")]
+    if not found:
         return None
-    last = len(argv) - 1 - argv[::-1].index("hl-guard")
-    rest = argv[last + 1 :]
+    rest = argv[found[-1] + 1 :]
     return [arg.replace("PROPOSAL_ID", "0123456789ab").replace("~", str(home), 1) for arg in rest]
 
 
-PROGRAMS = {"cat", "cd", "chmod", "claude", "cp", "curl", "git", "grep", "mkdir", "rm", "sed", "uv"}
+PROGRAMS = {
+    "cat",
+    "cd",
+    "chmod",
+    "claude",
+    "cp",
+    "curl",
+    "dscl",
+    "git",
+    "grep",
+    "mkdir",
+    "rm",
+    "sed",
+    "sudo",
+    "uv",
+}
 UV_RUN = {"hl-guard", "mypy", "pre-commit", "pytest", "python", "ruff"}
 UV_COMMANDS = {"run", "sync", "--version"}
 
