@@ -42,6 +42,7 @@ DOCS = sorted(
         ROOT / "SECURITY.md",
         ROOT / "CHANGELOG.md",
         ROOT / "CONTRIBUTING.md",
+        ROOT / "RELEASING.md",
         *(ROOT / "docs").glob("*.md"),
         *(ROOT / "examples").glob("*.md"),
     ]
