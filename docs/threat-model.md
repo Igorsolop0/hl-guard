@@ -100,8 +100,9 @@ the code on `main`. Report a flaw privately, see
   hl-guard cannot tell your coins from its own, and no warning shows. Cancel
   such stops in the app.
 - **You change the stop in the app.** hl-guard records the state it finds:
-  a new oid, a cancel or a fill. A stop that is then larger than hl-guard's
-  lot is shrunk back to the lot on the next write call.
+  a new oid, a cancel or a fill. It keeps the trigger it recorded, so a stop
+  that is then larger than hl-guard's lot is shrunk back to the lot, at that
+  recorded trigger, on the next write call.
 - **No person in the loop.** With `approval: never` or `{above_usd: N}`,
   entries go out with no person in the loop, and `hl-guard serve` warns about
   it at start.
