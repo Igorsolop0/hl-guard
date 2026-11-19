@@ -99,10 +99,12 @@ the code on `main`. Report a flaw privately, see
   own net fills capped by the position. When you hold coins on the same side,
   hl-guard cannot tell your coins from its own, and no warning shows. Cancel
   such stops in the app.
-- **You change the stop in the app.** hl-guard records the state it finds:
-  a new oid, a cancel or a fill. It keeps the trigger it recorded, so a stop
-  that is then larger than hl-guard's lot is shrunk back to the lot, at that
-  recorded trigger, on the next write call.
+- **You change the stop in the app.** hl-guard finds the stop by its cloid
+  and records what it finds: a new oid, a cancel or a fill. No testnet run
+  showed whether an edit in the app keeps the cloid. If the stop is then
+  larger than hl-guard's lot, hl-guard cannot shrink it, since the signer
+  only lets a stop get smaller than its recorded size: on the next write
+  call it cancels the stop, closes the lot reduce-only and warns.
 - **No person in the loop.** With `approval: never` or `{above_usd: N}`,
   entries go out with no person in the loop, and `hl-guard serve` warns about
   it at start.

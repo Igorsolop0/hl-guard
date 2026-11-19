@@ -875,11 +875,18 @@ class Writer:
                 self._child_placed(c.pid, c, row.oid, row.size, "resting")
 
     def _shrink(
-        self, pid: str, kids: list[Child], size: Decimal, market: Market, mark: Decimal
+        self,
+        pid: str,
+        kids: list[Child],
+        size: Decimal,
+        market: Market,
+        mark: Decimal,
+        close_lot: bool = True,
     ) -> str | None:
         """Shrink the children of one entry to ``size`` with one batchModify by
-        cloid. If that fails or its answer is unclear, cancel them and close the
-        lot instead."""
+        cloid. If that fails or its answer is unclear, cancel them, and close the
+        lot too unless ``close_lot`` is false: after a partial close the lot left
+        stays open, with a warning that it has no stop."""
         if not kids:
             return None
         modifies = [
@@ -909,19 +916,19 @@ class Writer:
             body = self._send(pid, action, RISK_HEADROOM)
             acks = parse_modify_acks(body, tuple(c.cloid for c in kids))
         except ActionConstructionError as exc:
-            return self._close_unprotected(pid, kids, size, market, mark, str(exc))
+            return self._unshrunk(pid, kids, size, market, mark, str(exc), close_lot)
         except _ExchangeRefused as exc:
-            return self._close_unprotected(pid, kids, size, market, mark, exc.text)
+            return self._unshrunk(pid, kids, size, market, mark, exc.text, close_lot)
         except ShapeError:
             self._set_halt(
                 pid, f"the answer to a stop shrink has an unknown shape (proposal {pid})"
             )
-            return self._close_unprotected(pid, kids, size, market, mark, "unknown answer")
+            return self._unshrunk(pid, kids, size, market, mark, "unknown answer", close_lot)
         except Exception as exc:
             failure = as_failure(exc)
             if failure is None:
                 raise
-            return self._close_unprotected(pid, kids, size, market, mark, failure.detail)
+            return self._unshrunk(pid, kids, size, market, mark, failure.detail, close_lot)
         refused = [ack.message for ack in acks if isinstance(ack, Refused)]
         for c, ack in zip(kids, acks, strict=True):
             if isinstance(ack, Resting):
@@ -933,8 +940,36 @@ class Writer:
                     )
                 self._child_placed(pid, c, ack.oid, size, "resting")
         if refused:
-            return self._close_unprotected(pid, kids, size, market, mark, "; ".join(refused))
+            return self._unshrunk(pid, kids, size, market, mark, "; ".join(refused), close_lot)
         return None
+
+    def _unshrunk(
+        self,
+        pid: str,
+        kids: list[Child],
+        size: Decimal,
+        market: Market,
+        mark: Decimal,
+        why: str,
+        close_lot: bool,
+    ) -> str:
+        if close_lot:
+            return self._close_unprotected(pid, kids, size, market, mark, why)
+        coin = kids[0].coin
+        notes = [f"the stop could not be shrunk to the {wire(size)} {coin} left ({why})"]
+        try:
+            still = self._cancel_children(pid, kids)
+            notes.append("hl-guard cancelled it; the lot left has no stop")
+            if still:
+                notes.append(f"stops not confirmed cancelled: {[c.cloid for c in still]}")
+        except Exception as exc:
+            failure = as_failure(exc)
+            if failure is None:
+                raise
+            notes.append(f"unfinished: {failure.detail}")
+        text = "WARNING: " + "; ".join(notes) + ". Check open_orders and positions."
+        self._record(Kind.ERROR, {"id": pid, "detail": text[:1000]})
+        return text
 
     def _cancel_children(self, pid: str, kids: list[Child], state: str = CANCELLED) -> list[Child]:
         """Cancel by cloid, then by oid for rows that still carry an own cloid.
@@ -1271,7 +1306,7 @@ class Writer:
                 if still:
                     warnings.append(f"stops not confirmed cancelled: {[c.cloid for c in still]}")
                 continue
-            failed = self._shrink(guard, group, kept, market, market.mark_px)
+            failed = self._shrink(guard, group, kept, market, market.mark_px, close_lot=False)
             if failed is not None:
                 warnings.append(failed)
         kids = self.kids().children

@@ -339,3 +339,22 @@ def test_no_open_stop_means_no_reconcile_read(never: Path, venue: Venue, fake: F
 
     assert [r["type"] for r in fake.requests] == []
     assert Decimal("0.05") == tools_write.CHILD_SLIPPAGE
+
+
+def test_a_partial_close_whose_shrink_fails_cancels_the_stops_and_keeps_the_lot(
+    never: Path, venue: Venue
+) -> None:
+    venue.modify_override = _refuse_modify
+
+    out = run(
+        never,
+        ("propose_order", WITH_TP),
+        ("close_position", {"coin": "BTC", "size": "0.0001"}),
+    )
+
+    closed = out[1][1]
+    assert closed["result"] == "placed"
+    assert closed["warning"].startswith("WARNING: the stop could not be shrunk to the 0.0001 BTC")
+    assert "the lot left has no stop" in closed["warning"]
+    assert children(venue) == []
+    assert venue.positions["BTC"].size == Decimal("0.0001")
