@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, NoReturn, TypeGuard
 
-from hl_guard.policy.ceilings import MAX_LEVERAGE, PER_ORDER_USD_CEILING
+from hl_guard.policy.ceilings import CEILING_BY_FIELD, MAX_LEVERAGE, PER_ORDER_USD_CEILING
 
 ALLOWED_ACTION_TYPES: frozenset[str] = frozenset(
     {
         "order",
+        "batchModify",
         "cancel",
         "cancelByCloid",
         "scheduleCancel",
@@ -48,7 +50,6 @@ FORBIDDEN_ACTION_TYPES: frozenset[str] = frozenset(
         "agentSetAbstraction",
         "twapOrder",
         "twapCancel",
-        "batchModify",
         "noop",
         "validatorL1Stream",
         "claimRewards",
@@ -76,6 +77,9 @@ DOCUMENTED_ACTION_TYPES: frozenset[str] = ALLOWED_ACTION_TYPES | FORBIDDEN_ACTIO
 _ALLOWED_TIFS = frozenset({"Gtc", "Ioc", "Alo"})
 _ALLOWED_TPSL = frozenset({"tp", "sl"})
 _MAX_BATCH = 20
+_MAX_MODIFIES = 2
+_CHILD_PX_FLOOR = CEILING_BY_FIELD["close_sell_floor"].low or Decimal(0)
+_CHILD_PX_CAP = CEILING_BY_FIELD["close_buy_cap"].high or Decimal(0)
 _MAX_MARGIN_NTLI = int(PER_ORDER_USD_CEILING) * 1_000_000
 _DECIMAL_RE = re.compile(r"^[0-9]+(\.[0-9]+)?$")
 _CLOID_RE = re.compile(r"0x[0-9a-fA-F]{32}")
@@ -83,6 +87,25 @@ _U64_LIMIT = 2**64
 SPOT_ASSET_OFFSET = 10_000
 
 Action = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RecordedChild:
+    """A stop child that hl-guard placed with an entry, as the ledger records it.
+
+    A shrink must keep every field but ``s``, and ``s`` is the latest recorded
+    size. All prices are wire strings.
+    """
+
+    a: int
+    b: bool
+    p: str
+    trigger_px: str
+    tpsl: str
+    s: str
+
+
+Children = Mapping[str, RecordedChild]
 
 
 class ActionConstructionError(ValueError):
@@ -266,13 +289,119 @@ def _build_order(payload: Mapping[str, Any]) -> Action:
     if len(orders) > _MAX_BATCH:
         _fail_order_condition(f"orders batch capped at {_MAX_BATCH}")
     grouping = payload.get("grouping", "na")
-    if grouping != "na":
-        _fail_order_condition(f"grouping {grouping!r} is not allowed (na only)")
-    return {
-        "type": "order",
-        "orders": [_canonical_order_wire(o) for o in orders],
-        "grouping": "na",
-    }
+    if not isinstance(grouping, str) or grouping not in ("na", "normalTpsl"):
+        _fail_order_condition(f"grouping {grouping!r} is not allowed (na or normalTpsl only)")
+    wires = [_canonical_order_wire(o) for o in orders]
+    if grouping == "normalTpsl":
+        _check_normal_tpsl(wires)
+    return {"type": "order", "orders": wires, "grouping": grouping}
+
+
+def _fail_tpsl(detail: str) -> NoReturn:
+    raise ActionConstructionError(f"normalTpsl order does not meet the allowlist: {detail}")
+
+
+def _check_child_px(child: Mapping[str, Any], field: str) -> None:
+    """``p`` does not bound the fill of a market trigger, so it is only kept
+    sane: on the exit side of the trigger, inside the hard close floor and cap."""
+    p, trigger = Decimal(child["p"]), Decimal(child["t"]["trigger"]["triggerPx"])
+    if child["b"]:
+        sane = trigger <= p <= trigger * _CHILD_PX_CAP
+    else:
+        sane = trigger * _CHILD_PX_FLOOR <= p <= trigger
+    if not sane:
+        _fail_tpsl(f"{field} p {child['p']} is not on the exit side of its trigger {trigger}")
+
+
+def _check_normal_tpsl(wires: list[dict[str, Any]]) -> None:
+    """Exactly an Ioc entry, then its stop-loss and optional take-profit."""
+    if len(wires) not in (2, 3):
+        _fail_tpsl(f"{len(wires)} orders; [entry, sl] or [entry, sl, tp] only")
+    entry, children = wires[0], wires[1:]
+    if entry["t"] != {"limit": {"tif": "Ioc"}}:
+        _fail_tpsl("the first order must be an Ioc limit entry")
+    if entry["r"] is not False:
+        _fail_tpsl("the entry must not be reduce-only")
+    entry_px = Decimal(entry["p"])
+    tpsls = []
+    for child in children:
+        trigger = child["t"].get("trigger")
+        if trigger is None:
+            _fail_tpsl("each order after the entry must be a trigger")
+        tpsl = trigger["tpsl"]
+        tpsls.append(tpsl)
+        if trigger["isMarket"] is not True:
+            _fail_tpsl(f"the {tpsl} child must be a market trigger (isMarket: true)")
+        if child["a"] != entry["a"]:
+            _fail_tpsl(f"the {tpsl} child is on another asset than the entry")
+        if child["b"] == entry["b"]:
+            _fail_tpsl(f"the {tpsl} child is on the entry's side")
+        if child["s"] != entry["s"]:
+            _fail_tpsl(f"the {tpsl} child size {child['s']} is not the entry size {entry['s']}")
+        trigger_px = Decimal(trigger["triggerPx"])
+        above = trigger_px > entry_px
+        below = trigger_px < entry_px
+        loss_side = below if entry["b"] else above
+        profit_side = above if entry["b"] else below
+        if tpsl == "sl" and not loss_side:
+            _fail_tpsl(f"the stop-loss trigger {trigger_px} is not on the loss side of {entry_px}")
+        if tpsl == "tp" and not profit_side:
+            _fail_tpsl(f"the take-profit trigger {trigger_px} is not on the profit side")
+        _check_child_px(child, tpsl)
+    if sorted(tpsls) not in (["sl"], ["sl", "tp"]):
+        _fail_tpsl(f"children {tpsls}: exactly one sl and at most one tp")
+    cloids = [w["c"] for w in wires]
+    if len(set(cloids)) != len(cloids):
+        _fail_tpsl("two orders share a cloid")
+
+
+def _fail_modify(detail: str) -> NoReturn:
+    raise ActionConstructionError(f"batchModify does not meet the allowlist: {detail}")
+
+
+def _build_batch_modify(payload: Mapping[str, Any], children: Children | None) -> Action:
+    """Only the shrink of a stop child that hl-guard recorded: by cloid, the
+    recorded wire with a smaller size and nothing else changed."""
+    _check_keys(payload, frozenset({"modifies"}), "batchModify")
+    if children is None:
+        _fail_modify("no recorded children to check against")
+    modifies = payload.get("modifies")
+    if not isinstance(modifies, list) or not 1 <= len(modifies) <= _MAX_MODIFIES:
+        _fail_modify(f"modifies must be a list of 1 to {_MAX_MODIFIES}")
+    wires = []
+    for m in modifies:
+        if not isinstance(m, Mapping):
+            _fail_modify("each modify must be a mapping")
+        _check_keys(m, frozenset({"oid", "order"}), "batchModify modify")
+        oid = _require(m, "oid", "batchModify modify")
+        if not isinstance(oid, str):
+            _fail_modify(f"oid must be a cloid string, got {type(oid).__name__}")
+        cloid = _cloid(oid, "batchModify modify: oid")
+        order = _canonical_order_wire(_require(m, "order", "batchModify modify"))
+        if order["c"] != cloid:
+            _fail_modify("the oid cloid is not the order's cloid")
+        recorded = children.get(cloid)
+        if recorded is None:
+            _fail_modify(f"{cloid} is not a stop child that hl-guard recorded")
+        trigger = order["t"].get("trigger")
+        if trigger is None or trigger["isMarket"] is not True:
+            _fail_modify("the order must be a market trigger")
+        kept = (
+            ("a", order["a"], recorded.a),
+            ("b", order["b"], recorded.b),
+            ("p", order["p"], recorded.p),
+            ("triggerPx", trigger["triggerPx"], recorded.trigger_px),
+            ("tpsl", trigger["tpsl"], recorded.tpsl),
+        )
+        for name, got, want in kept:
+            if got != want:
+                _fail_modify(f"{name} {got!r} differs from the recorded {want!r}")
+        if not 0 < Decimal(order["s"]) < Decimal(recorded.s):
+            _fail_modify(f"size {order['s']} must be above 0 and below the recorded {recorded.s}")
+        wires.append({"oid": cloid, "order": order})
+    if len({w["oid"] for w in wires}) != len(wires):
+        _fail_modify("two modifies name one cloid")
+    return {"type": "batchModify", "modifies": wires}
 
 
 def _cancel_list(payload: Mapping[str, Any], action_type: str) -> list[Any]:
@@ -358,10 +487,14 @@ _BUILDERS: Mapping[str, Callable[[Mapping[str, Any]], Action]] = {
 }
 
 
-def build_action(action_type: str, payload: Mapping[str, Any] | None = None) -> Action:
+def build_action(
+    action_type: str, payload: Mapping[str, Any] | None = None, *, children: Children | None = None
+) -> Action:
     """Build the canonical SDK 0.24.0 wire dict for ``action_type``.
 
-    Raises ``ForbiddenActionError`` for a documented type off the allowlist and
+    ``children`` holds the stop children hl-guard recorded; only a batchModify
+    reads it, and without it a batchModify is refused. Raises
+    ``ForbiddenActionError`` for a documented type off the allowlist and
     ``ActionConstructionError`` for anything else invalid, always before signing.
     """
     if not isinstance(action_type, str):
@@ -377,10 +510,13 @@ def build_action(action_type: str, payload: Mapping[str, Any] | None = None) -> 
             )
         if "vaultAddress" in payload:
             raise ActionConstructionError("vaultAddress key is rejected (no vault trading)")
+        if action_type == "batchModify":
+            return _build_batch_modify(payload, children)
         return _BUILDERS[action_type](payload)
     if action_type == "modify":
         raise ForbiddenActionError(
-            "modify is refused: SDK 0.24.0 sends modify as the forbidden batchModify"
+            "modify is refused: only the pinned batchModify shrink of a recorded stop child is "
+            "allowed"
         )
     if action_type in FORBIDDEN_ACTION_TYPES:
         raise ForbiddenActionError(
@@ -392,11 +528,24 @@ def build_action(action_type: str, payload: Mapping[str, Any] | None = None) -> 
 
 
 def reduces_risk(action: Action) -> bool:
-    """What a halt lets out: reduce-only orders and cancels. A cancel of a
-    reduce-only order raises risk, so every caller cancels only opening orders:
-    cancel_order refuses reduce-only rows and the halt keeps them."""
+    """What a halt lets out: reduce-only orders, cancels and the shrink of a
+    stop child. A cancel of a reduce-only order raises risk, so cancel_order
+    refuses reduce-only rows, and only a stop child whose lot is closed is
+    cancelled. The signer checks the full batchModify shape after this."""
     if action.get("type") in ("cancel", "cancelByCloid"):
         return True
+    modifies = action.get("modifies")
+    if action.get("type") == "batchModify":
+        return (
+            isinstance(modifies, list)
+            and bool(modifies)
+            and all(
+                isinstance(m, Mapping)
+                and isinstance(m.get("order"), Mapping)
+                and m["order"].get("r") is True
+                for m in modifies
+            )
+        )
     orders = action.get("orders")
     return (
         action.get("type") == "order"

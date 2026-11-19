@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 import msgpack
@@ -10,7 +11,7 @@ from eth_keys.backends import get_backend_class
 from eth_keys.backends.coincurve import CoinCurveECCBackend
 from eth_utils.crypto import keccak
 
-from hl_guard.exchange.actions import Action, ActionConstructionError, build_action
+from hl_guard.exchange.actions import Action, ActionConstructionError, Children, build_action
 from hl_guard.exchange.network import NetworkError, network_for
 
 Signature = dict[str, Any]
@@ -67,10 +68,19 @@ def _check_u64(name: str, value: object) -> None:
 class Signer:
     """Signs allowlisted L1 actions with an agent key for one network.
 
-    ``account_address`` is the master address the agent trades for.
+    ``account_address`` is the master address the agent trades for. ``children``
+    reads the stop children recorded in the ledger, so a batchModify can only
+    shrink one of those; without it every batchModify is refused.
     """
 
-    def __init__(self, agent: LocalAccount, account_address: str, *, network: str) -> None:
+    def __init__(
+        self,
+        agent: LocalAccount,
+        account_address: str,
+        *,
+        network: str,
+        children: Callable[[], Children] | None = None,
+    ) -> None:
         try:
             self._network = network_for(network)
         except NetworkError as exc:
@@ -83,6 +93,7 @@ class Signer:
             )
         self._agent = agent
         self._account_address = account_address
+        self._children = children
 
     @property
     def agent_address(self) -> str:
@@ -111,8 +122,9 @@ class Signer:
         if expires_after is not None:
             _check_u64("expires_after", expires_after)
         try:
+            children = None if self._children is None else self._children()
             canonical = build_action(
-                action["type"], {k: v for k, v in action.items() if k != "type"}
+                action["type"], {k: v for k, v in action.items() if k != "type"}, children=children
             )
         except ActionConstructionError:
             raise SignerError(
