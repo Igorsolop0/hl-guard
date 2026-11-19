@@ -66,7 +66,7 @@ less time.
 ## How much is tested against the real testnet?
 
 - **The test suite runs offline.** When this page was written,
-  `uv run pytest --co -q` counted 2569 tests. They run against fakes of the
+  `uv run pytest --co -q` counted 2686 tests. They run against fakes of the
   Hyperliquid API and local servers. The suite allows only loopback
   connections, and a test checks that.
 - **The testnet run is by hand.** `tools/e2e/run.sh` runs on the testnet: the

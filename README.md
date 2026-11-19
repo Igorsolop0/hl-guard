@@ -82,7 +82,7 @@ hl-guard also does not:
 
 ## Status and review
 
-Pre-alpha, version 0.1.0. Test it on the Hyperliquid testnet before you point
+Pre-alpha, version 0.2.0. Test it on the Hyperliquid testnet before you point
 it at real funds. Expect breaking changes.
 
 - The exchange core, the signer and the action allowlist are ported from a
@@ -90,6 +90,8 @@ it at real funds. Expect breaking changes.
   2026.
 - The hl-guard server, that is the MCP tools, the approval and the policy
   gate, has a large offline test suite and end-to-end runs on the testnet.
+  The stops of 0.2.0 were probed on the testnet with a script; the
+  end-to-end lane for them, `tools/e2e/run.sh --lane tpsl`, has not run yet.
   It has had no independent human security review yet. Reports are welcome,
   see [SECURITY.md](SECURITY.md).
 

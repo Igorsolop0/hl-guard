@@ -85,7 +85,7 @@ Check that the command works:
 uv run hl-guard --version
 ```
 
-It prints `hl-guard 0.1.0`.
+It prints `hl-guard 0.2.0`.
 
 ## 2. Write the policy and the config
 
