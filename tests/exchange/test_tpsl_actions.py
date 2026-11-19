@@ -181,6 +181,11 @@ HOSTILE_ORDERS: dict[str, tuple[Edit | None, str | None, str]] = {
     ),
     "entry reduce-only": (_set(0, ("r",), True), None, "must not be reduce-only"),
     "child r false": (_set(1, ("r",), False), None, "reduceOnly"),
+    "child is a limit order": (
+        _set(1, ("t",), {"limit": {"tif": "Ioc"}}),
+        None,
+        "each order after the entry must be a trigger",
+    ),
     "child size differs": (_set(1, ("s",), "0.0104"), None, "is not the entry size"),
     "child same side": (_set(1, ("b",), True), None, "on the entry's side"),
     "child other asset": (_set(1, ("a",), 5), None, "another asset"),
@@ -310,3 +315,24 @@ def test_a_shrink_passes_a_halt_and_a_grouped_entry_does_not() -> None:
     assert reduces_risk({"type": "batchModify", "modifies": []}) is False
     opening = {"type": "batchModify", "modifies": [{"oid": SL_C, "order": {"r": False}}]}
     assert reduces_risk(opening) is False
+
+
+@pytest.mark.parametrize(
+    ("p", "case"),
+    [("1770", "below its trigger"), ("17800", "past the hard cap")],
+)
+def test_a_buy_child_p_off_the_exit_side_is_refused(p: str, case: str) -> None:
+    orders = [sdk_entry(False), sdk_sl(False), sdk_tp(False)]
+    build_action("order", {"orders": copy.deepcopy(orders), "grouping": "normalTpsl"})
+    orders[1]["p"] = p
+    with pytest.raises(ActionConstructionError, match="exit side"):
+        build_action("order", {"orders": orders, "grouping": "normalTpsl"})
+
+
+def test_a_short_entry_refuses_a_stop_below_and_a_target_above_it() -> None:
+    for index, px in ((1, "1700"), (2, "1750")):
+        orders = [sdk_entry(False), sdk_sl(False), sdk_tp(False)]
+        orders[index]["t"]["trigger"]["triggerPx"] = px
+        orders[index]["p"] = "1800"
+        with pytest.raises(ActionConstructionError, match="side"):
+            build_action("order", {"orders": orders, "grouping": "normalTpsl"})
