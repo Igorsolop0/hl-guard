@@ -10,6 +10,11 @@ hl-guard is a safety layer. It limits how much a wrong, confused or steered
 model can do with your account. It does not make a strategy profitable, and
 this project makes no claim about returns.
 
+> [!CAUTION]
+> Not financial advice. hl-guard is pre-alpha software that can lose money
+> through bugs, wrong settings or market moves. Use it at your own risk, and
+> run it on the Hyperliquid testnet before you give it real funds.
+
 ## What hl-guard does not do
 
 > [!IMPORTANT]
@@ -29,7 +34,9 @@ hl-guard also does not:
   `hl-guard approve`.
 - protect you from a client that can run shell commands as your user. Such a
   client can run `hl-guard approve` itself and read the agent key. See
-  [SECURITY.md](SECURITY.md).
+  [SECURITY.md](SECURITY.md), and
+  [run hl-guard under a separate user](docs/separate-user.md) to close that
+  gap.
 - run as a hosted service. It runs on your machine only.
 
 ## What it does
@@ -60,10 +67,21 @@ hl-guard also does not:
 - **Testnet first.** The default network is the Hyperliquid testnet. Mainnet
   needs a mode file and a start flag. See [docs/policy.md](docs/policy.md).
 
-## Status
+## Status and review
 
 Pre-alpha, version 0.1.0. Test it on the Hyperliquid testnet before you point
 it at real funds. Expect breaking changes.
+
+- The exchange core, the signer and the action allowlist are ported from a
+  private trading system that has run on Hyperliquid mainnet since October
+  2026.
+- The hl-guard server, that is the MCP tools, the approval and the policy
+  gate, has a large offline test suite and end-to-end runs on the testnet.
+  It has had no independent human security review yet. Reports are welcome,
+  see [SECURITY.md](SECURITY.md).
+
+The [FAQ](docs/faq.md) answers common questions about limits, keys and
+testing.
 
 ## Get started
 
@@ -72,6 +90,10 @@ it at real funds. Expect breaking changes.
 - [Connect a client](docs/clients.md): Claude Desktop, Claude Code and Cursor.
 - [Write a policy](docs/policy.md): every limit and its ceiling.
 - [Threat model](docs/threat-model.md): who can do what, and what stops them.
+- [FAQ](docs/faq.md): sub-accounts, a crash after a fill, a stolen key,
+  testing and review, the ledger.
+- [Separate user](docs/separate-user.md): keep the key and the approval out of
+  reach of a client with a shell.
 
 ## Develop
 
