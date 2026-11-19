@@ -1050,13 +1050,14 @@ class Writer:
         sent = self.fills.fold().sent
         oversized: dict[str, list[tuple[Child, Decimal]]] = {}
         unfilled: list[Child] = []
+        fired = False
         for c in self.kids().open_children():
             row = by_cloid.get(c.cloid)
             target = self.kids().target(c)
             if row is None and c.parent not in sent:
                 self._child_decided(c.pid, c, Status.CANCELLED, "its entry was never sent")
             elif row is None:
-                self._settle_child(c, target)
+                fired = self._settle_child(c, target) or fired
             else:
                 if row.oid != c.oid:
                     self._child_placed(c.pid, c, row.oid, row.size, "resting")
@@ -1074,28 +1075,32 @@ class Writer:
             pid = self._guard({"entry": entry, "coin": coin, "size": wire(size)})
             kids = [self.kids().children[c.cloid] for c, _ in items]
             self._shrink(pid, kids, size, market, market.mark_px)
+        if fired:
+            self._reconcile_or_record("reconcile")
 
-    def _settle_child(self, c: Child, target: Decimal | None) -> None:
+    def _settle_child(self, c: Child, target: Decimal | None) -> bool:
         """A child that left the book: the exchange cancels the children of an
         entry that did not fill; otherwise orderStatus by its latest oid says
         whether it fired."""
         if target == 0:
             self._child_decided(c.pid, c, Status.CANCELLED, "its entry did not fill")
-            return
+            return False
         asked: int | str | None = c.oid if c.oid is not None else None if c.resized else c.cloid
         if asked is None:
-            return
+            return False
         state = parse_order_status(self.rt.user_post("orderStatus", oid=asked))
         if state is None or state.resting:
-            return
+            return False
         filled = state.orig_size - state.remaining
         if state.status in FILLED_WORDS or filled > 0:
             self._child_placed(c.pid, c, state.oid, filled, "filled")
+            return True
         else:
             detail = f"the exchange reports it {state.status}"
             self._child_decided(
                 c.pid, c, Status.CANCELLED, detail, oid=state.oid, settled=True, state=CANCELLED
             )
+            return False
 
     def _send_orders(
         self,
