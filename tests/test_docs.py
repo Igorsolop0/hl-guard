@@ -20,6 +20,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -440,6 +441,28 @@ def test_the_e2e_will_not_close_a_position_it_did_not_open(tmp_path: Path) -> No
     planned = e2e.plan([read[0], e2e.Result("positions", False, [])], "BTC", policy)
     assert 10 < planned.small * planned.limit_px <= policy.per_order_usd_max
     assert planned.big * planned.limit_px > policy.per_order_usd_max
+
+
+@pytest.mark.parametrize("lane", ["basic", "tpsl"])
+def test_the_e2e_dry_run_judges_a_good_run_and_a_bad_one(lane: str) -> None:
+    lines = _e2e().selftest(lane)
+    assert lines[0] == f"selftest {lane}: the judge passes a good run and fails a bad one"
+
+
+def test_the_e2e_tpsl_entry_names_a_stop_loss_and_a_take_profit(tmp_path: Path) -> None:
+    e2e = _e2e()
+    market = {"name": "BTC", "mark_px": "80000", "sz_decimals": 5}
+    read = [
+        e2e.Result("markets", False, {"network": "testnet", "markets": [market]}),
+        e2e.Result("positions", False, []),
+    ]
+    policy = load_policy(_e2e_config(tmp_path, mode=None).parent / "policy.yaml")
+    planned = e2e.plan(read, "BTC", policy)
+    steps = e2e.tpsl_scenario(planned, tmp_path / "serve.yaml", 120)
+    (entry,) = [s for s in steps if s.get("tool") == "propose_order"]
+    args = entry["arguments"]
+    assert Decimal(args["stop_loss_px"]) < planned.limit_px < Decimal(args["take_profit_px"])
+    assert args["tif"] == "Ioc"
 
 
 def test_the_e2e_script_parses() -> None:

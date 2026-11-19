@@ -24,8 +24,9 @@ A maintainer does this once, by hand:
    new version.
 2. Run every check in [CONTRIBUTING.md](CONTRIBUTING.md).
 3. Run the testnet end-to-end check, `tools/e2e/run.sh`, as its header
-   describes. It needs a testnet agent key and a second terminal for the
-   approval. Keep its transcripts. Do not release if it fails.
+   describes, once with `--lane basic` and once with `--lane tpsl`. It needs
+   a testnet agent key and a second terminal for the approval. Keep its
+   transcripts. Do not release if it fails.
 4. Merge to `main`, then tag the merge commit and push the tag:
 
 <!-- docs-test: skip your-value -->
