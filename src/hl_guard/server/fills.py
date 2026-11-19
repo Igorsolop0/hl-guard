@@ -56,6 +56,7 @@ class _Outstanding:
     fate: Fate
     missing: Decimal
     read_from_ms: int
+    child: str
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class _Placed:
     at_ms: int
     left_ms: int | None
     fate: Fate
+    child: str
 
 
 class BookFold:
@@ -118,7 +120,10 @@ class BookFold:
         if not isinstance(action, Mapping) or action.get("type") != "order":
             return
         sent = _Sent(p["id"], record.ts_ms, expires if type(expires) is int else None)
-        for o in action["orders"]:
+        orders = action["orders"]
+        if action.get("grouping") == "normalTpsl":
+            orders = orders[:1]
+        for o in orders:
             self.sent.setdefault(o["c"], sent)
             if o["c"] not in self._decided:
                 self.unresolved[o["c"]] = p["id"]
@@ -133,7 +138,12 @@ class BookFold:
             left: int | None = None
             if fate != "resting":
                 left = before.left_ms if before and before.left_ms is not None else record.ts_ms
-            self._placed[oid] = _Placed(p["id"], str(p["coin"]), Decimal(p["size"]), at, left, fate)
+            named = p.get("child")
+            child = named if isinstance(named, str) else ""
+            if before is not None:
+                child = before.child
+            placed = _Placed(p["id"], str(p["coin"]), Decimal(p["size"]), at, left, fate, child)
+            self._placed[oid] = placed
             self._read_from.setdefault(oid, at - FILLS_SLACK_MS)
         elif p.get("outcome") == Status.CANCELLED.value and before is not None:
             if p.get("settled") is True:
@@ -161,6 +171,7 @@ class BookFold:
                 placed.fate,
                 placed.size - got,
                 self._read_from[oid],
+                placed.child,
             )
 
 
@@ -178,8 +189,14 @@ class FillBook:
         payload = {"id": pid, "outcome": outcome.value, "rule": rule, "detail": detail}
         self.rt.ledger.append(Kind.DECISION, payload | extra)
 
-    def placed(self, pid: str, oid: int, status: str, size: str, coin: str, cloid: str) -> None:
-        self._decide(pid, Status.PLACED, oid=oid, status=status, size=size, coin=coin, cloid=cloid)
+    def placed(
+        self, pid: str, oid: int, status: str, size: str, coin: str, cloid: str, child: str = ""
+    ) -> None:
+        """``child`` names the stop child the order is, so the proposal keeps its own oid."""
+        extra = {"child": child} if child else {}
+        self._decide(
+            pid, Status.PLACED, oid=oid, status=status, size=size, coin=coin, cloid=cloid, **extra
+        )
 
     def _resolve(self) -> None:
         """An order the exchange does not know yet stays unresolved until its
@@ -210,9 +227,10 @@ class FillBook:
             return
         filled = Decimal(0) if state is None else state.orig_size - state.remaining
         if filled > 0 and state is not None:
-            self.placed(o.id, oid, "filled", wire(filled), state.coin, "")
+            self.placed(o.id, oid, "filled", wire(filled), state.coin, "", o.child)
         else:
-            self._decide(o.id, Status.CANCELLED, detail="no fill", oid=oid, settled=True)
+            extra = {"child": o.child} if o.child else {}
+            self._decide(o.id, Status.CANCELLED, detail="no fill", oid=oid, settled=True, **extra)
 
     def reconcile(self, open_rows: Mapping[int, OrderRow] | None = None) -> None:
         """Record the fills of orders this server placed. ``open_rows`` holds the
@@ -295,7 +313,10 @@ class FillBook:
         ]
         for oid, o in old:
             detail = f"{o.missing} of order {oid} never showed in the fills"
-            self._decide(o.id, Status.CANCELLED, FILLS_MISSING, detail, oid=oid, settled=True)
+            extra = {"child": o.child} if o.child else {}
+            self._decide(
+                o.id, Status.CANCELLED, FILLS_MISSING, detail, oid=oid, settled=True, **extra
+            )
             self.rt.ledger.append(Kind.ERROR, {"id": o.id, "detail": detail})
         if old:
             detail = f"{len(old)} orders have fills the exchange never showed; check the account"

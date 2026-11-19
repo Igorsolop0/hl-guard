@@ -72,12 +72,14 @@ def _fill_time(record: Record) -> int:
 
 
 def _entry_orders(record: Record, coins: Mapping[str, str]) -> list[tuple[str, EntryRecord]]:
-    """(cloid, entry) of each order an ORDER record of propose_order sent."""
+    """(cloid, entry) of each opening order an ORDER record of propose_order
+    sent. The stop children of an entry and a close that protects it are
+    reduce-only, so they are no entries."""
     action, pid = record.payload.get("action"), record.payload.get("id")
     coin = coins.get(pid) if isinstance(pid, str) else None
     if not isinstance(action, Mapping) or action.get("type") != "order" or coin is None:
         return []
-    return [(o["c"], EntryRecord(coin, record.ts_ms)) for o in action["orders"]]
+    return [(o["c"], EntryRecord(coin, record.ts_ms)) for o in action["orders"] if not o["r"]]
 
 
 class Reducer(Protocol):

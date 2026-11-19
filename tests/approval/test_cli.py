@@ -23,7 +23,7 @@ ORDER = {
     "side": "buy",
     "size": "0.0002",
     "limit_px": "81171",
-    "tif": "Gtc",
+    "tif": "Ioc",
     "stop_loss_px": "80000",
     "take_profit_px": None,
     "leverage": 1,
@@ -76,7 +76,7 @@ def test_approve_writes_one_approval_bound_to_the_hash(config: Path) -> None:
 
     assert code == 0
     assert signal.SIGINT not in signal.pthread_sigmask(signal.SIG_BLOCK, ())
-    assert lines[0].startswith("approved a1b2c3d4e5f6: buy 0.0002 BTC limit 81171 Gtc")
+    assert lines[0].startswith("approved a1b2c3d4e5f6: buy 0.0002 BTC limit 81171 Ioc")
     assert lines[1:] == [f"account 0x{'ab' * 20} on testnet", f"hash {digest}"]
     assert approvals(config) == [{"id": "a1b2c3d4e5f6", "hash": digest, "approved": True}]
 
@@ -590,12 +590,12 @@ def test_a_proposal_whose_order_does_not_match_its_hash_is_refused(config: Path)
 
 
 NOT_PLACED = (
-    "(recorded and checked by the gate, NOT placed: hl-guard places no stop orders, "
-    "so you or the client must place them)"
+    "(placed on the exchange with the Ioc entry as reduce-only market triggers, "
+    "sized to the filled lot)"
 )
 
 
-def test_approve_says_the_stop_loss_is_not_placed(config: Path) -> None:
+def test_approve_says_how_the_stop_loss_is_placed(config: Path) -> None:
     propose(config)
     shown: list[str] = []
 
@@ -606,16 +606,16 @@ def test_approve_says_the_stop_loss_is_not_placed(config: Path) -> None:
     code, lines = decide(config, "a1b2c3d4e5f6", True, confirm)
 
     assert code == 0
-    words = "buy 0.0002 BTC limit 81171 Gtc at 1x isolated, stop-loss 80000"
+    words = "buy 0.0002 BTC limit 81171 Ioc at 1x isolated, stop-loss 80000"
     assert f"{words} {NOT_PLACED}" in shown[0]
     assert lines[0].startswith(f"approved a1b2c3d4e5f6: {words} {NOT_PLACED}, ")
 
 
-def test_the_summary_names_both_prices_as_not_placed() -> None:
+def test_the_summary_names_both_prices_and_how_they_are_placed() -> None:
     order = {**ORDER, "take_profit_px": "84000"}
 
     assert model.summary(order) == (
-        "buy 0.0002 BTC limit 81171 Gtc at 1x isolated, stop-loss 80000, take-profit 84000 "
+        "buy 0.0002 BTC limit 81171 Ioc at 1x isolated, stop-loss 80000, take-profit 84000 "
         + NOT_PLACED
     )
 
@@ -741,3 +741,20 @@ def test_an_approval_naming_another_hash_leaves_the_proposal_pending(config: Pat
     proposal = model.fold(ledger(config).records())["a1b2c3d4e5f6"]
 
     assert proposal.status is model.Status.PENDING
+
+
+def test_approve_refuses_an_entry_that_is_not_ioc(config: Path) -> None:
+    """A 0.1.0 Gtc proposal still pending after the upgrade cannot carry its stops."""
+    gtc = {**ORDER, "tif": "Gtc"}
+    digest = proposal_hash("a1b2c3d4e5f6", "testnet", "0x" + "ab" * 20, gtc)
+    led = ledger(config)
+    proposal = {"id": "a1b2c3d4e5f6", "tool": "propose_order", "order": gtc, "hash": digest}
+    led.append(Kind.PROPOSAL, proposal)
+    expires = time.time_ns() // 1_000_000 + 60_000
+    pending = {"id": "a1b2c3d4e5f6", "outcome": "pending", "rule": "", "detail": ""}
+    led.append(Kind.DECISION, pending | {"expires_ms": expires, "ttl_s": 120})
+
+    code, lines = decide(config, "a1b2c3d4e5f6", True)
+
+    assert code == 1
+    assert "ioc_only" in lines[0]

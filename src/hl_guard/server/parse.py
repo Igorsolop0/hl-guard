@@ -573,6 +573,37 @@ def parse_order_acks(raw: Any, cloids: tuple[str, ...]) -> tuple[OrderAck, ...]:
     return tuple(_order_ack(v, at[i], cloids[i]) for i, v in enumerate(statuses))
 
 
+ChildSlot = Literal["waitingForFill", "waitingForTrigger"]
+_CHILD_SLOT: Mapping[type, ChildSlot] = {Resting: "waitingForFill", Filled: "waitingForTrigger"}
+
+
+def parse_entry_acks(raw: Any, cloids: tuple[str, ...]) -> tuple[OrderAck, tuple[ChildSlot, ...]]:
+    """The ack of a normalTpsl entry: the entry's slot, then one bare string per
+    child, ``waitingForFill`` for a resting entry and ``waitingForTrigger`` for a
+    filled one. A child slot has no oid. Any other child slot is an unknown shape."""
+    at = _At("exchange order")
+    statuses = _statuses(raw, at, "order", len(cloids))
+    entry = _order_ack(statuses[0], at[0], cloids[0])
+    slot = _CHILD_SLOT.get(type(entry))
+    for i, v in enumerate(statuses[1:], start=1):
+        if slot is None or v != slot:
+            raise at[i].fail(f"expected the child slot {slot!r} after {type(entry).__name__}")
+    return entry, tuple(slot for _ in statuses[1:] if slot is not None)
+
+
+def parse_modify_acks(raw: Any, cloids: tuple[str, ...]) -> tuple[Resting | Refused, ...]:
+    """A batchModify answers like an order: each modified child rests again
+    under a new oid, with the same cloid."""
+    at = _At("exchange batchModify")
+    acks: list[Resting | Refused] = []
+    for i, v in enumerate(_statuses(raw, at, "order", len(cloids))):
+        ack = _order_ack(v, at[i], cloids[i])
+        if isinstance(ack, Filled):
+            raise at[i].fail("a modified stop child cannot fill at once")
+        acks.append(ack)
+    return tuple(acks)
+
+
 def parse_cancel_acks(raw: Any, n: int) -> tuple[Refused | None, ...]:
     """``None`` for each cancel the exchange made."""
     at = _At("exchange cancel")
