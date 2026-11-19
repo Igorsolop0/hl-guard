@@ -1985,8 +1985,8 @@ def test_serve_warns_that_entries_go_out_without_exchange_stops(
     lines = startup_lines(runtime, True)
 
     assert lines[1] == (
-        f"hl-guard serve: warning: with approval {word}, entries go out without "
-        "exchange-side stops; the stop-loss is checked by the gate, not placed"
+        f"hl-guard serve: warning: with approval {word}, entries go out with no "
+        "person in the loop; each carries its stop-loss on the exchange"
     )
 
 

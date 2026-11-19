@@ -1,6 +1,6 @@
 # FAQ
 
-Short answers about what hl-guard 0.1.0 does and does not do. The
+Short answers about what hl-guard 0.2.0 does and does not do. The
 [threat model](threat-model.md) has the full list.
 
 ## Why not just use a sub-account with a small balance?
@@ -15,21 +15,28 @@ Keep a small balance, and use hl-guard as well. They limit different things.
 A small balance does not stop a model from spending it in one order, and
 hl-guard does not stop a slow loss within your limits.
 
-hl-guard 0.1.0 trades only the account in the `account` line of the config.
+hl-guard trades only the account in the `account` line of the config.
 It never sets the vault address that Hyperliquid uses to trade a sub-account,
 so it cannot trade a sub-account of that account. To cap the total, use a
 separate master wallet that holds only what you are willing to lose.
 
 ## What happens if the server dies right after a fill?
 
-The position stays open with no stop on the exchange. hl-guard 0.1.0 does not
-place stop-loss or take-profit orders: it checks the stop-loss price of every
-entry and writes it to the ledger, but it does not send it. Whether the server
-runs or not, the position has no stop until you place one, for example in
-the Hyperliquid app.
+The stop is on the exchange from the moment of the fill; a partial fill is
+shrunk on the next start.
 
-A stop-loss and take-profit on the exchange, attached to the entry order, is
-planned for 0.2.0.
+- hl-guard sends the stop-loss, and the take-profit if you named one, with
+  the entry in one action. Hyperliquid places them as reduce-only market
+  triggers when the entry fills and runs them whether the server runs or
+  not.
+- Hyperliquid sizes the stops to the ordered size, even when only part of
+  the entry fills. hl-guard shrinks the stop right after a partial fill. If
+  the server stops between the fill and the shrink, it fixes the stop on its
+  next start or next write call. In that window the stop is larger than the
+  lot. It is reduce-only, so it cannot open a position, but if it fires it
+  can sell coins you hold on the same side.
+- If hl-guard cannot shrink the stop, it cancels it, closes the filled lot
+  with a reduce-only order and says so in a warning.
 
 ## What can a stolen agent key do outside hl-guard?
 
@@ -67,6 +74,12 @@ less time.
   a second terminal, its fill, a close and a ledger that verifies. It runs
   before each release, see [RELEASING.md](../RELEASING.md). CI does not run
   it.
+- **The stops of 0.2.0 were probed by hand.** A probe script sent the exact
+  entry and stop shapes to the testnet on 2026-11-19: full and partial Ioc
+  fills, the one-cancels-other pair, a stop on the wrong side, a close made
+  outside hl-guard and a shrink by batchModify. The lane
+  `tools/e2e/run.sh --lane tpsl` runs an entry with its stops through
+  hl-guard itself; it has not run on the testnet yet.
 
 ## Who reviewed it besides AI?
 

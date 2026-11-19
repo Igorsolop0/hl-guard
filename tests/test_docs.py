@@ -344,10 +344,38 @@ def test_the_docs_make_no_profit_or_return_claims(path: Path) -> None:
 
 
 @pytest.mark.parametrize("path", [ROOT / "README.md", QUICKSTART], ids=lambda p: p.name)
-def test_the_docs_say_that_hl_guard_places_no_stop(path: Path) -> None:
+def test_the_docs_state_the_crash_window_of_the_stop(path: Path) -> None:
     lines = (line.removeprefix(">") for line in path.read_text().splitlines())
     text = " ".join(" ".join(lines).replace("*", "").split())
-    assert "does not place stop-loss or take-profit orders" in text
+    assert "does not place stop-loss or take-profit orders" not in text
+    assert (
+        "hl-guard shrinks the stop right after a partial fill. If the server stops between "
+        "the fill and the shrink, it fixes the stop on its next start or next write call."
+    ) in text
+
+
+@pytest.mark.parametrize("path", DOCS, ids=lambda p: str(p.relative_to(ROOT)))
+def test_the_docs_never_promise_the_stop_is_never_oversized(path: Path) -> None:
+    text = _flat(path).lower()
+    for claim in ("never larger than", "never oversized", "never leaves a stop"):
+        assert claim not in text, (path.name, claim)
+
+
+def test_the_faq_answers_a_server_that_dies_after_a_fill() -> None:
+    assert (
+        "The stop is on the exchange from the moment of the fill; a partial fill is shrunk "
+        "on the next start."
+    ) in _flat(ROOT / "docs" / "faq.md")
+
+
+def test_the_threat_model_names_the_stop_and_its_residual_risks() -> None:
+    text = _flat(ROOT / "docs" / "threat-model.md")
+    assert (
+        "SL (and optional TP) on the exchange for every hl-guard entry, sized to the filled lot"
+        in text
+    )
+    for risk in ("The crash window.", "A close in the app.", "You change the stop in the app."):
+        assert risk in text
 
 
 def _e2e() -> ModuleType:

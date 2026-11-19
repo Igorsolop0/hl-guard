@@ -11,10 +11,13 @@ This guide takes about 5 minutes. At the end you have:
 Everything here runs on the Hyperliquid **testnet**. No real funds are at risk.
 
 > [!IMPORTANT]
-> hl-guard requires a stop-loss price on every entry, but it does **not**
-> place stop-loss or take-profit orders on the exchange. It checks the price
-> and records it. In this guide you close the position right after it fills.
-> If you keep a position open, place its stop yourself in the Hyperliquid app.
+> hl-guard requires a stop-loss price on every entry and sends it with the
+> entry: the stop-loss, and a take-profit if you name one, go on the
+> exchange as reduce-only triggers, sized to the filled lot. hl-guard shrinks
+> the stop right after a partial fill. If the server stops between the fill
+> and the shrink, it fixes the stop on its next start or next write call. In
+> this guide you close the position right after it fills, and hl-guard
+> cancels its stop.
 
 ## Before you start
 
@@ -277,11 +280,11 @@ To use Claude Code or Cursor instead, follow [clients.md](clients.md).
 Ask Claude:
 
 > Use hl-guard to buy BTC worth about 60 USD with a limit price 0.2% above
-> the mark, time in force Ioc, and a stop-loss 1% below the limit.
+> the mark and a stop-loss 1% below the limit.
 
-Ioc, "immediate or cancel", means that the order fills at once at the
-limit price or better, and the exchange cancels whatever does not fill. No
-order is left resting on the book.
+Every entry is Ioc, "immediate or cancel": it fills at once at the limit
+price or better, and the exchange cancels whatever does not fill. No entry is
+left resting on the book.
 
 Claude calls `propose_order`. The answer is a rejection, because the policy
 allows at most 20 USD per order:
@@ -320,7 +323,7 @@ uv run hl-guard approve PROPOSAL_ID --config ~/.config/hl-guard/serve.yaml
 `no proposal waits for approval`:
 
 ```text
-3f9c1a7b2e40: buy 0.00012 BTC limit … Ioc at 1x isolated, stop-loss … (recorded and checked by the gate, NOT placed: hl-guard places no stop orders, so you or the client must place them), 287 s left
+3f9c1a7b2e40: buy 0.00012 BTC limit … Ioc at 1x isolated, stop-loss … (placed on the exchange with the Ioc entry as reduce-only market triggers, sized to the filled lot), 287 s left
 ```
 
 Replace `PROPOSAL_ID` with the 12-character id. Keep Claude Desktop open: only
@@ -331,7 +334,7 @@ refuses with `no hl-guard serve with write tools holds …; start it first`.
 type `yes`:
 
 ```text
-PROPOSAL_ID: buy 0.00012 BTC limit … Ioc at 1x isolated, stop-loss … (recorded and checked by the gate, NOT placed: hl-guard places no stop orders, so you or the client must place them), … s left
+PROPOSAL_ID: buy 0.00012 BTC limit … Ioc at 1x isolated, stop-loss … (placed on the exchange with the Ioc entry as reduce-only market triggers, sized to the filled lot), … s left
 account 0x… on testnet
 hash …
 Type yes to approve this order:
@@ -344,14 +347,17 @@ Ask Claude:
 > What is the status of that proposal, and what are my positions?
 
 `proposal_status` says `placed`, and `positions` shows the BTC position.
+`proposal_status` also shows the stop under `protection`: its cloid, trigger
+price, size and state `live`. `open_orders` lists it as a reduce-only
+`Stop Market` order.
 
-If the price moved, the exchange can refuse the Ioc order because no seller
-is at its limit. `proposal_status` then says `failed`, and no position opens.
-A refused order does not count as an entry. Propose it again with a limit up
-to 0.4% above the mark, since the policy's band is 0.5%.
-
-The position has **no stop-loss on the exchange**. hl-guard recorded the stop
-price but did not place it.
+If the price moved, no seller may be at the limit, and the Ioc entry does
+not fill. No testnet run has shown the answer that Hyperliquid then gives
+for an entry with stops, so hl-guard treats it as unknown and writes the
+`HALT` file. `proposal_status` then says `failed`, and no position opens.
+Check `open_orders` and `positions`, remove the `HALT` file, and propose it
+again with a limit up to 0.4% above the mark, since the policy's band is
+0.5%.
 
 ## 8. Close the position
 
@@ -361,6 +367,8 @@ Ask Claude:
 
 Claude calls `close_position`. A close needs no approval. hl-guard sends a
 reduce-only Ioc order, and the answer says `placed` with status `filled`.
+Then it cancels its stop on BTC, and the answer's `protection` shows the stop
+as `cancelled`.
 
 ## 9. Read the ledger
 
@@ -385,9 +393,9 @@ uv run hl-guard ledger show ~/.hl-guard/ledger.jsonl --last 30
 Each line is one JSON record, and its `kind` says what it records. The 60 USD
 order has a `proposal` and a `decision` that names the rule. The 12 USD order
 has a `proposal`, `decision` records as it moves from pending to placed, your
-`approval`, the `order` that hl-guard signed, the exchange's `ack` and a
-`fill`. The close has the same records without an approval. The stop-loss
-price is in the `proposal` record's `order` object.
+`approval`, a `child` record for the stop, the `order` that hl-guard signed
+with the entry and its stop, the exchange's `ack` and a `fill`. The close has
+the same records without an approval, then the cancel of the stop.
 
 ## Run it again
 

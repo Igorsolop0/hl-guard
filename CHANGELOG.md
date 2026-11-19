@@ -1,6 +1,56 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (Unreleased)
+
+### Stops on the exchange
+
+- Every entry carries its stop-loss, and an optional take-profit, on the
+  exchange. `propose_order` sends one `normalTpsl` action: the entry and its
+  stops as reduce-only market triggers, sized to the filled lot.
+- Entries are Ioc only, since the stops go with the entry. `tif` accepts only
+  `Ioc`, and `hl-guard approve` refuses a pending entry that is not Ioc.
+- hl-guard shrinks the stop right after a partial fill, with a `batchModify`
+  by cloid. If the modify fails or its answer is unclear, it cancels the
+  stops, closes the filled lot with a reduce-only Ioc order and answers with
+  a warning. If the server stops between the fill and the shrink, it fixes
+  the stop on its next start or next write call.
+- On start and at the start of every write tool, hl-guard checks its open
+  stops against the exchange: it learns their oids, records the ones that
+  fired or were cancelled, and shrinks a stop larger than its lot.
+- `close_position` comes out of hl-guard's own lot first. When that lot is
+  gone it cancels its stops on the coin; when part is left it shrinks them.
+  `halt` cancels the stops of each coin whose close filled and keeps those
+  of a coin whose close failed.
+- `proposal_status` has a new field `protection`: each stop with its cloid,
+  trigger, size and state. `positions` has a new field `stop_warnings` for
+  an hl-guard stop larger than hl-guard's own lot.
+- Fills of the stops count toward the daily loss and the loss streak.
+- The ledger has new `child` and `child_resize` records. A 0.1.0 reader
+  refuses a ledger that holds them.
+
+### Gate
+
+- New rule `opposite_position`: an entry against an open position on the
+  other side of the coin is rejected, because its reduce-only stops would
+  protect nothing.
+
+### Signer
+
+- `batchModify` joins the allowlist, only as the shrink of a stop that the
+  ledger records: by cloid, everything but the size unchanged, the size
+  smaller. A halt lets this shrink out.
+- An `order` with grouping `normalTpsl` is allowed only as an Ioc entry
+  followed by one stop-loss and at most one take-profit, each of the entry's
+  size, on the exit side, with the stop-loss on the loss side of the entry
+  price. `positionTpsl` and every other grouping stay refused.
+
+### Known limits
+
+- No testnet run has shown the answer to a grouped Ioc entry that does not
+  fill. hl-guard treats it as an unknown shape and writes the `HALT` file.
+- A close of hl-guard's lot in the Hyperliquid app leaves its stops live
+  against your remaining coins. `positions` warns only when a stop is larger
+  than the position or than hl-guard's own net fills.
 
 ### Docs
 
