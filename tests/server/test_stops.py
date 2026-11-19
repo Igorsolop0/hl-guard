@@ -17,7 +17,7 @@ from hl_guard.server.snapshot import fold_ledger
 from hl_guard.server.tools_write import Writer
 from server.conftest import Clock
 from server.fake_info import Answer, FakeInfo
-from server.test_tools_write import BTC, actions_sent, records, session
+from server.test_tools_write import BTC, actions_sent, approve, records, session
 from server.venue import Position, Venue, configure
 
 WITH_TP = {**BTC, "take_profit_px": "84000"}
@@ -358,3 +358,31 @@ def test_a_partial_close_whose_shrink_fails_cancels_the_stops_and_keeps_the_lot(
     assert "the lot left has no stop" in closed["warning"]
     assert children(venue) == []
     assert venue.positions["BTC"].size == Decimal("0.0001")
+
+
+def test_an_entry_at_the_weight_floor_is_evaluated_with_a_stop_on_the_book(
+    tmp_path: Path, durable: None, venue: Venue, clock: Clock
+) -> None:
+    """The floor still buys one entry evaluation a minute with a live stop; the
+    reconcile of an entry uses the entry's own book read."""
+    from server.test_fills import ETH, FLOOR, _fresh_minute
+
+    config = configure(tmp_path, weight=FLOOR, policy={"entries_per_day_max": "5"})
+    _fresh_minute(config)
+
+    def next_minute(writer: Writer, out: list[Any]) -> None:
+        clock.advance(61)
+        _fresh_minute(config)
+
+    out = session(
+        config,
+        ("propose_order", BTC),
+        approve(config),
+        next_minute,
+        ("propose_order", ETH),
+        next_minute,
+        ("propose_order", ETH),
+    )
+
+    assert len(children(venue)) == 1
+    assert [out[i][1]["result"] for i in (3, 5)] == ["pending_approval", "pending_approval"]

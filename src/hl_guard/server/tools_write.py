@@ -590,6 +590,7 @@ class Writer:
         if refused is not None:
             return refused
         book = self._read_book()
+        self.reconcile_children(rows=book.orders)
         unread = self._fills_unread_reason(book)
         if unread is not None:
             return self._reject(pid, Check.FILLS_UNREAD, unread)
@@ -652,7 +653,6 @@ class Writer:
             take_profit_px=args.get("take_profit_px"),
             leverage=args["leverage"],
         )
-        self.reconcile_children()
         pid = secrets.token_hex(6)
         body = order.as_json()
         digest = proposal_hash(pid, self.rt.network, self.rt.config.account, body)
@@ -1060,25 +1060,29 @@ class Writer:
         self._record(Kind.ERROR, {"id": pid, "detail": text[:1000]})
         return text
 
-    def reconcile_children(self, headroom: int = 0) -> None:
+    def reconcile_children(
+        self, headroom: int = 0, rows: tuple[OrderRow, ...] | None = None
+    ) -> None:
         """Check every open own child against its row and its parent's fill: learn
         oids, settle the ones that left the book, shrink the oversized ones. A
-        failed read is recorded and never stops the tool that called this."""
+        failed read is recorded and never stops the tool that called this. An
+        entry passes the rows of its own book read, so the check costs it no read."""
         try:
-            self._reconcile_children(headroom)
+            self._reconcile_children(headroom, rows)
         except Exception as exc:
             failure = as_failure(exc)
             if failure is None:
                 raise
             self._record(Kind.ERROR, {"detail": f"stop reconcile: {failure.detail}"})
 
-    def _reconcile_children(self, headroom: int) -> None:
+    def _reconcile_children(self, headroom: int, rows: tuple[OrderRow, ...] | None) -> None:
         open_now = self.kids().open_children()
         if not open_now:
             return
         if self.fills.fold().unresolved:
             self._reconcile_or_record("reconcile")
-        rows = self._open_rows(headroom)
+        if rows is None:
+            rows = self._open_rows(headroom)
         if rows is None:
             return
         by_cloid = {o.cloid: o for o in rows if o.cloid}
