@@ -357,27 +357,27 @@ class Venue:
             case "order" if action["grouping"] == "normalTpsl":
                 return _ok("order", self._grouped(action["orders"]))
             case "order":
-                statuses = [self._order(w) for w in action["orders"]]
+                placed = [self._order(w) for w in action["orders"]]
                 for w in action["orders"]:
                     self._drop_orphans(self.names[w["a"]])
-                return _ok("order", statuses)
+                return _ok("order", placed)
             case "batchModify":
                 if self.modify_override is not None:
                     return self.modify_override(action)
                 return _ok("order", [self._modify(m) for m in action["modifies"]])
             case "cancelByCloid":
-                statuses = []
+                cancelled: list[Any] = []
                 for c in action["cancels"]:
                     found = [o for o in self.orders if o["c"] == c["cloid"]]
                     for o in found:
                         self.orders.remove(o)
                         self._record_of(o)["status"] = "canceled"
-                    statuses.append(
+                    cancelled.append(
                         "success"
                         if found
                         else {"error": "Order was never placed, already canceled, or filled."}
                     )
-                return _ok("cancel", statuses)
+                return _ok("cancel", cancelled)
             case "cancel":
                 statuses: list[Any] = []
                 for c in action["cancels"]:

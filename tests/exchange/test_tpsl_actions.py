@@ -40,7 +40,7 @@ def _request(is_buy: bool, sz: float, px: float, kind: dict[str, Any], r: bool, 
         "is_buy": is_buy,
         "sz": sz,
         "limit_px": px,
-        "order_type": kind,  # type: ignore[typeddict-item]
+        "order_type": kind,
         "reduce_only": r,
         "cloid": Cloid.from_str(c),
     }
@@ -166,7 +166,7 @@ def _two_sls(orders: list[dict[str, Any]]) -> None:
     orders[2] = {**sdk_sl(), "c": TP_C}
 
 
-HOSTILE_ORDERS: dict[str, tuple[Edit | None, str | None, str]] = {
+HOSTILE_ORDERS: dict[str, tuple[Edit | None, Any, str]] = {
     "entry tif Gtc": (_set(0, ("t", "limit", "tif"), "Gtc"), None, "Ioc limit entry"),
     "entry tif Alo": (_set(0, ("t", "limit", "tif"), "Alo"), None, "Ioc limit entry"),
     "entry is a trigger": (

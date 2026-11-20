@@ -87,6 +87,14 @@ the code on `main`. Report a flaw privately, see
 
 ## What is not protected
 
+- **A shrink and a close that both fail.** If hl-guard cannot shrink the
+  stop and the reduce-only close of the lot is refused too, the lot stays
+  open without a stop. The answer warns, and the warning names what is
+  left.
+- **An entry with stops that the exchange refuses.** Any refused or unknown
+  answer to an entry with stops sets HALT, since no testnet run has shown
+  that answer's shape. Check `open_orders` and `positions` before you remove
+  the `HALT` file.
 - **The crash window.** hl-guard shrinks the stop right after a partial
   fill. If the server stops between the fill and the shrink, it fixes the
   stop on its next start or next write call. Until then the stop is the

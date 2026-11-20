@@ -16,7 +16,10 @@
   the stop on its next start or next write call.
 - On start and at the start of every write tool, hl-guard checks its open
   stops against the exchange: it learns their oids, records the ones that
-  fired or were cancelled, and shrinks a stop larger than its lot.
+  fired or were cancelled, and shrinks a stop larger than its lot. It runs
+  before any refusal, also under HALT, since a shrink and a reduce-only close
+  only lower risk. When it cannot shrink a stop, the answer of that write
+  call, or of the first one after a start, carries a `warning`.
 - `close_position` comes out of hl-guard's own lot first. When that lot is
   gone it cancels its stops on the coin; when part is left it shrinks them.
   `halt` cancels the stops of each coin whose close filled and keeps those
@@ -46,8 +49,10 @@
 
 ### Known limits
 
-- No testnet run has shown the answer to a grouped Ioc entry that does not
-  fill. hl-guard treats it as an unknown shape and writes the `HALT` file.
+- Any refused or unknown answer to an entry with stops sets HALT, for
+  example an Ioc entry that does not fill or one the exchange refuses for
+  margin. No testnet run has shown the shape of such an answer, so hl-guard
+  treats it as unknown and writes the `HALT` file.
 - A close of hl-guard's lot in the Hyperliquid app leaves its stops live
   against your remaining coins. `positions` warns only when a stop is larger
   than the position or than hl-guard's own net fills.
