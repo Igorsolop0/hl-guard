@@ -101,8 +101,38 @@ def test_any_other_child_slot_after_a_fill_is_an_unknown_shape(slot: Any) -> Non
         parse_entry_acks(ack, (ENTRY, SL))
 
 
+MISSED_ACK = _ok(
+    "order",
+    [{"error": "Order could not immediately match against any resting orders. asset=4"}],
+)
+
+
+def test_a_missed_ioc_entry_answers_one_error_slot_for_the_group() -> None:
+    """T9: the entry and its two stops get one error slot; no stop is placed."""
+    entry, slots = parse_entry_acks(MISSED_ACK, (ENTRY, TP, SL))
+
+    assert entry == Refused("Order could not immediately match against any resting orders. asset=4")
+    assert slots == ()
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        [],
+        [{"resting": {"oid": 900001, "cloid": ENTRY}}],
+        [{"filled": {"totalSz": "1", "avgPx": "1", "oid": 900002, "cloid": ENTRY}}],
+        [{"error": "x"}, "waitingForTrigger"],
+        [{"error": "x"}, {"error": "x"}, {"error": "x"}, {"error": "x"}],
+    ],
+    ids=["no slot", "one resting slot", "one filled slot", "two slots", "four slots"],
+)
+def test_any_other_slot_count_is_an_unknown_shape(statuses: list[Any]) -> None:
+    with pytest.raises(ShapeError):
+        parse_entry_acks(_ok("order", statuses), (ENTRY, TP, SL))
+
+
 def test_a_refused_entry_with_child_slots_is_an_unknown_shape() -> None:
-    """No run showed what a grouped entry that does not fill answers."""
+    """No run showed an entry error next to one slot per child."""
     ack = _ok("order", [{"error": "Order could not immediately match"}, "waitingForFill"])
 
     with pytest.raises(ShapeError):

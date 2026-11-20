@@ -7,8 +7,8 @@ as reduce-only triggers at the full ordered size even after a partial fill,
 with their own oids and no oid in the ack; they are one-cancels-other; a
 batchModify by cloid cancels and replaces them under new oids; and orderStatus
 by cloid then answers with the old, cancelled order. An Ioc parent that does
-not fill answers with a child slot no run has shown, so the server must treat
-it as an unknown shape."""
+not fill answers one error slot for the whole group, its status is
+iocCancelRejected and its children are never placed (T9, 2026-11-20)."""
 
 from __future__ import annotations
 
@@ -276,7 +276,8 @@ class Venue:
     def _grouped(self, wires: list[dict[str, Any]]) -> list[Any]:
         parent = self._order(wires[0])
         if "filled" not in parent:
-            return [parent, *("notObservedOnTestnet" for _ in wires[1:])]
+            self.by_cloid[wires[0]["c"]]["status"] = "iocCancelRejected"
+            return [parent]
         for w in wires[1:]:
             self.next_oid += 1
             coin = self.names[w["a"]]

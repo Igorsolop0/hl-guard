@@ -823,7 +823,8 @@ class Writer:
         except ShapeError:
             self._unknown(pid, "the exchange answer has an unknown shape")
         match ack:
-            case Refused(message):  # unreachable until the parser accepts the t9 ack shape
+            case Refused(message):
+                self._check_no_stop_placed(pid, cloids[1:])
                 self._decide(pid, Status.FAILED, Check.EXCHANGE, message, cloids=list(cloids))
                 return Rejected(pid, Check.EXCHANGE, message)
             case Resting(oid):
@@ -834,6 +835,15 @@ class Writer:
         self._reconcile_or_record(pid)
         shown = protection(self.kids(), pid)
         return Placed(pid, ack.oid, "filled", ack.total_sz, ack.avg_px, shown, warning)
+
+    def _check_no_stop_placed(self, pid: str, stops: tuple[str, ...]) -> None:
+        """A refused entry never places its stops (testnet T9). One read makes
+        sure; a live stop, or a read that fails, makes the answer unknown."""
+        rows = self._open_rows(0)
+        if rows is None:
+            self._unknown(pid, "the stops of a refused entry could not be checked")
+        if any(o.cloid in stops for o in rows):
+            self._unknown(pid, "a refused entry left a stop on the book")
 
     def _child_wire(
         self, order: Order, market: Market, tpsl: str, trigger: Decimal

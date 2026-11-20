@@ -451,3 +451,34 @@ def test_the_stops_of_a_grouped_entry_are_never_left_unresolved(
     asked = [r["oid"] for r in fake.requests if r["type"] == "orderStatus"]
     assert not {o["c"] for o in children(venue)} & set(asked)
     assert not (never.parent / "data" / "HALT").exists()
+
+
+def test_an_approved_entry_shrinks_an_oversized_stop_before_it_goes_out(
+    config: Path, venue: Venue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The approval places the entry after a fresh read; that read's rows
+    reconcile the stops first, even when no write call ran in between."""
+    from server.test_fills import ETH
+
+    venue.leverage["BTC"] = ("isolated", 1)
+    venue.liquidity["BTC"] = Decimal("0.0001")
+    with monkeypatch.context() as died:
+        died.setattr(Writer, "_protect", lambda *args: None)
+        session(config, ("propose_order", WITH_TP), approve(config))
+    assert [o["s"] for o in children(venue)] == ["0.0002", "0.0002"]
+    real = Writer.reconcile_children
+    calls: list[Any] = []
+
+    def only_with_rows(self: Writer, headroom: int = 0, rows: Any = None) -> Any:
+        calls.append(rows is not None)
+        return real(self, headroom, rows) if rows is not None else None
+
+    monkeypatch.setattr(Writer, "reconcile_children", only_with_rows)
+
+    session(config, ("propose_order", ETH), approve(config))
+
+    kinds = [a["type"] for a in venue.actions]
+    entries = [i for i, a in enumerate(venue.actions) if a.get("grouping") == "normalTpsl"]
+    assert kinds.index("batchModify") < entries[-1]
+    assert [o["s"] for o in children(venue) if o["coin"] == "BTC"] == ["0.0001", "0.0001"]
+    assert True in calls

@@ -605,16 +605,76 @@ def test_an_exchange_refusal_is_rejected_by_exchange(config: Path, venue: Venue)
     assert not (config.parent / "data" / "HALT").exists()
 
 
-def test_an_ioc_entry_that_does_not_fill_sets_the_halt_file(config: Path, venue: Venue) -> None:
-    """No testnet run showed the ack of a grouped Ioc entry that does not fill, so
-    its child slots are an unknown shape."""
+MISSED = "Order could not immediately match against any resting orders. asset=3"
+
+
+def test_a_missed_ioc_entry_is_refused_and_its_stops_are_never_placed(
+    config: Path, venue: Venue, fake: FakeInfo
+) -> None:
+    """T9: one error slot for the group, and no stop on the book."""
     venue.move("BTC", 90000)
     ioc = {**BTC, "limit_px": "89600", "stop_loss_px": "88500"}
 
-    _, _, (_, status) = session(config, ("propose_order", ioc), approve(config), _status_of())
+    out = session(config, ("propose_order", ioc), approve(config), _status_of(), ("positions", {}))
+
+    status = out[2][1]
+    assert status["status"] == "failed"
+    assert status["detail"] == f"exchange: {MISSED}"
+    assert status["protection"]["sl"]["state"] == f"refused: {MISSED}"
+    assert not (config.parent / "data" / "HALT").exists()
+    assert venue.orders == [] and venue.positions == {}
+    from hl_guard.server.children import fold_children
+
+    assert fold_children(records(config)).open_children() == []
+    before = len(fake.requests)
+    session(config, ("close_position", {"coin": "BTC"}))
+    assert "frontendOpenOrders" not in [r["type"] for r in fake.requests[before:]]
+
+
+def _missed_with(venue: Venue, stop_left: bool) -> Callable[[dict[str, Any]], Answer]:
+    def answer(body: dict[str, Any]) -> Answer:
+        action = body["action"]
+        if action["type"] != "order" or action.get("grouping") != "normalTpsl":
+            return venue._act(action)
+        if stop_left:
+            sl = action["orders"][1]
+            venue.next_oid += 1
+            row = {**sl, "coin": "BTC", "oid": venue.next_oid, "tif": None, "at": 0}
+            venue.orders.append(row | {"trigger": sl["t"]["trigger"]})
+        statuses = [{"error": MISSED}]
+        data = {"status": "ok", "response": {"type": "order", "data": {"statuses": statuses}}}
+        return 200, json.dumps(data).encode(), {}
+
+    return answer
+
+
+def test_a_refused_entry_with_a_stop_left_on_the_book_sets_the_halt_file(
+    config: Path, venue: Venue
+) -> None:
+    venue.exchange_override = _missed_with(venue, stop_left=True)
+
+    _, _, (_, status) = session(config, ("propose_order", BTC), approve(config), _status_of())
 
     assert status["status"] == "failed"
-    assert status["detail"].startswith("network: the exchange answer has an unknown shape")
+    assert "a refused entry left a stop on the book" in status["detail"]
+    assert (config.parent / "data" / "HALT").exists()
+
+
+def test_a_refused_entry_whose_stops_cannot_be_read_sets_the_halt_file(
+    config: Path, venue: Venue, fake: FakeInfo
+) -> None:
+    venue.exchange_override = _missed_with(venue, stop_left=False)
+    rows = fake.answers["frontendOpenOrders"]
+
+    def fail_after_the_send(body: dict[str, Any]) -> Answer:
+        sent = any(a["type"] == "order" for a in venue.actions)
+        return (500, b"", {}) if sent else rows(body)
+
+    fake.answers["frontendOpenOrders"] = fail_after_the_send
+
+    _, _, (_, status) = session(config, ("propose_order", BTC), approve(config), _status_of())
+
+    assert "the stops of a refused entry could not be checked" in status["detail"]
     assert (config.parent / "data" / "HALT").exists()
 
 
