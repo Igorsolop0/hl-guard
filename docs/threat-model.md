@@ -91,10 +91,12 @@ the code on `main`. Report a flaw privately, see
   stop and the reduce-only close of the lot is refused too, the lot stays
   open without a stop. The answer warns, and the warning names what is
   left.
-- **An entry with stops that the exchange refuses.** Any refused or unknown
-  answer to an entry with stops sets HALT, since no testnet run has shown
-  that answer's shape. Check `open_orders` and `positions` before you remove
-  the `HALT` file.
+- **An unclear answer to an entry with stops.** A missed Ioc entry is
+  refused, and its stops are never placed (testnet-confirmed). hl-guard reads
+  the open orders once to make sure; if a stop of the refused entry is
+  listed, or the read fails, it treats the answer as unknown and writes the
+  `HALT` file. Any other answer shape it does not know sets HALT too. Check
+  `open_orders` and `positions` before you remove the `HALT` file.
 - **The crash window.** hl-guard shrinks the stop right after a partial
   fill. If the server stops between the fill and the shrink, it fixes the
   stop on its next start or next write call. Until then the stop is the

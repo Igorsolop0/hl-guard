@@ -352,13 +352,11 @@ price, size and state `live`. `open_orders` lists it as a reduce-only
 `Stop Market` order.
 
 If the price moved, no seller may be at the limit, and the Ioc entry does
-not fill. Any refused or unknown answer to an entry with stops sets HALT:
-no testnet run has shown how Hyperliquid answers an entry with stops that it
-refuses, so hl-guard treats every such answer as unknown and writes the
-`HALT` file. `proposal_status` then says `failed`, and no position opens.
-Check `open_orders` and `positions`, remove the `HALT` file, and propose it
-again with a limit up to 0.4% above the mark, since the policy's band is
-0.5%.
+not fill. A missed Ioc entry is refused, and its stops are never placed
+(testnet-confirmed). `proposal_status` then says `failed`, its `protection`
+shows each stop as `refused`, and no position opens. A refused entry does
+not count as an entry. Propose it again with a limit up to 0.4% above the
+mark, since the policy's band is 0.5%.
 
 ## 8. Close the position
 

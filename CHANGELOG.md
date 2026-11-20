@@ -49,10 +49,11 @@
 
 ### Known limits
 
-- Any refused or unknown answer to an entry with stops sets HALT, for
-  example an Ioc entry that does not fill or one the exchange refuses for
-  margin. No testnet run has shown the shape of such an answer, so hl-guard
-  treats it as unknown and writes the `HALT` file.
+- A missed Ioc entry is refused, and its stops are never placed
+  (testnet-confirmed): the exchange answers one error for the entry and its
+  stops. hl-guard checks the open orders once; a stop still listed, or a
+  read that fails, sets HALT. Any other answer shape it does not know sets
+  HALT too.
 - A close of hl-guard's lot in the Hyperliquid app leaves its stops live
   against your remaining coins. `positions` warns only when a stop is larger
   than the position or than hl-guard's own net fills.
