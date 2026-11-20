@@ -277,6 +277,58 @@ def test_halt_keeps_the_stops_of_a_coin_whose_close_failed(never: Path, venue: V
     assert {v["state"] for v in protection(out[0]).values()} == {"live"}
 
 
+def _refuse_far_from_oracle(venue: Venue) -> Any:
+    def answer(body: dict[str, Any]) -> Answer:
+        action = body["action"]
+        if action["type"] == "order" and action["orders"][0]["r"]:
+            text = "Price too far from oracle asset=0"
+            statuses = [{"error": text} for _ in action["orders"]]
+            data = {"status": "ok", "response": {"type": "order", "data": {"statuses": statuses}}}
+            return 200, json.dumps(data).encode(), {}
+        return venue._act(action)
+
+    return answer
+
+
+ORACLE_HINT = (
+    "Price too far from oracle asset=0. The exchange refused the close price as too far "
+    "from its oracle; nothing was closed and the stops stay"
+)
+
+
+def test_a_close_refused_as_too_far_from_the_oracle_says_so_and_keeps_the_stops(
+    never: Path, venue: Venue
+) -> None:
+    run(never, ("propose_order", WITH_TP))
+    venue.exchange_override = _refuse_far_from_oracle(venue)
+
+    ((_, closed),) = run(never, ("close_position", {"coin": "BTC"}))
+
+    assert (closed["result"], closed["rule"], closed["detail"]) == (
+        "rejected",
+        "exchange",
+        ORACLE_HINT,
+    )
+    assert len(children(venue)) == 2
+    assert venue.positions["BTC"].size == Decimal("0.0002")
+
+
+def test_halt_with_a_close_refused_as_too_far_from_the_oracle_stays_halted_and_keeps_the_stops(
+    never: Path, venue: Venue
+) -> None:
+    run(never, ("propose_order", WITH_TP))
+    venue.exchange_override = _refuse_far_from_oracle(venue)
+
+    ((_, halted), (_, again)) = run(never, ("halt", {}), ("propose_order", WITH_TP))
+
+    assert halted["closes"] == [{"coin": "BTC", "refused": ORACLE_HINT}]
+    assert halted["unfinished"] == [f"close BTC: refused: {ORACLE_HINT}"]
+    assert "stops" not in halted
+    assert len(children(venue)) == 2
+    assert venue.positions["BTC"].size == Decimal("0.0002")
+    assert (again["result"], again["rule"]) == ("rejected", "halted")
+
+
 def test_halt_cancels_the_stops_of_a_coin_it_closed(never: Path, venue: Venue) -> None:
     run(never, ("propose_order", WITH_TP))
 

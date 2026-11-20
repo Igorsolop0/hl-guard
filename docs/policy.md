@@ -124,6 +124,11 @@ Closes skip the price band, so a close passes even when the mark lags. A
 close is a reduce-only Ioc order at the floor or the cap. A tight floor or cap
 can refuse a close in a fast market until the mark catches up.
 
+The exchange can refuse a close with the error "Price too far from oracle".
+Then the `close_position` answer is `rejected` and says so, nothing was
+closed, and the stops stay on the exchange. `halt` keeps HALT set and lists
+the coin under `refused` and `unfinished`.
+
 ### Limits for actions that no tool sends yet
 
 The gate checks these limits, but no MCP tool in this version sends a margin

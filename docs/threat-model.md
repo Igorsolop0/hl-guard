@@ -67,7 +67,8 @@ the code on `main`. Report a flaw privately, see
    buy no higher than `close_buy_cap` times it. Accepted risk at both ends:
    with a floor of 0.95 a close is refused while the mark lags the book by
    more than 5 %; with a floor of 0.1 a sell on a stale mark can fill far
-   below it.
+   below it. A close the exchange refuses, for example as "Price too far
+   from oracle", keeps its stops, and `halt` keeps HALT set.
 6. **SL (and optional TP) on the exchange for every hl-guard entry, sized to
    the filled lot.** The stops go out with the entry in one action, so the
    stop is on the exchange from the moment of the fill. Hyperliquid does not

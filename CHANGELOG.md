@@ -47,8 +47,17 @@
   size, on the exit side, with the stop-loss on the loss side of the entry
   price. `positionTpsl` and every other grouping stay refused.
 
+### Changed
+
+- When the exchange refuses a close with "Price too far from oracle",
+  `close_position` answers `rejected` and says so; nothing was closed and
+  the stops stay. `halt` keeps HALT set, lists the coin under `refused` and
+  `unfinished`, and keeps its stops.
+
 ### Known limits
 
+- On testnet, a close of some coins was refused with "Price too far from
+  oracle", and the exchange does not document the band.
 - A missed Ioc entry is refused, and its stops are never placed
   (testnet-confirmed): the exchange answers one error for the entry and its
   stops. hl-guard checks the open orders once; a stop still listed, or a

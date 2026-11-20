@@ -299,6 +299,15 @@ def _serve_locks(rt: Runtime) -> tuple[int, ...]:
 R = TypeVar("R")
 
 
+def _oracle_hint(detail: str, stops_stay: bool = True) -> str:
+    """The exchange refuses a close priced too far from its oracle; say so
+    plainly. The cause is not known, so the hint names no fix."""
+    if "too far from oracle" not in detail.lower():
+        return detail
+    text = f"{detail}. The exchange refused the close price as too far from its oracle"
+    return text + ("; nothing was closed and the stops stay" if stops_stay else "")
+
+
 def _warned(warning: str | None, run: Callable[[], R]) -> R:
     """Put the warning of a reconcile that ran before the tool into its answer."""
     try:
@@ -1083,7 +1092,7 @@ class Writer:
                 case Placed(status="filled", filled_size=filled):
                     notes.append(f"hl-guard closed {filled} {coin} reduce-only")
                 case Rejected(detail=detail):
-                    notes.append(f"the close was refused: {detail}")
+                    notes.append(f"the close was refused: {_oracle_hint(detail, stops_stay=False)}")
             state, _ = self._state()
             held = next((p.size for p in state.positions if p.coin == coin), Decimal(0))
             notes.append(f"the {coin} position is now {held}")
@@ -1310,6 +1319,8 @@ class Writer:
             return built
         self._decide(pid, Status.ALLOWED, detail="a reduce-only close")
         (outcome,) = self._send_orders(pid, [(coin, built)], RISK_HEADROOM)
+        if isinstance(outcome, Rejected):
+            return dataclasses.replace(outcome, detail=_oracle_hint(outcome.detail))
         if isinstance(outcome, Placed) and outcome.filled_size:
             stops = self._after_close(pid, coin, outcome.filled_size, market)
             if stops is not None:
@@ -1476,7 +1487,9 @@ class Writer:
                         if filled and coin in markets:
                             self._halt_stops(pid, coin, filled, markets[coin], report)
                     case Rejected(detail=detail):
-                        closes.append({"coin": coin, "refused": detail})
+                        refused = _oracle_hint(detail)
+                        closes.append({"coin": coin, "refused": refused})
+                        report["unfinished"].append(f"close {coin}: refused: {refused}")
 
     def _halt_stops(
         self, pid: str, coin: str, filled: Decimal, market: Market, report: dict[str, Any]
@@ -1668,7 +1681,8 @@ _WRITE: tuple[Tool[Writer], ...] = (
         "Close all or part of an open position with a reduce-only order at the policy's "
         "exit price cap. A close needs no approval. A close comes out of hl-guard's own lot "
         "first: when that lot is gone, hl-guard cancels its stops on the coin; when part of it "
-        "is left, it shrinks them to what is left.",
+        "is left, it shrinks them to what is left. When the exchange refuses the close price "
+        "as too far from the oracle, the answer is rejected, says so, and the stops stay.",
         {"coin": _COIN, "size": DecimalArg("size in coins; all of it when left out", False)},
         lambda w, a: w.close(a),
         read_only=False,
@@ -1685,7 +1699,8 @@ _WRITE: tuple[Tool[Writer], ...] = (
         "halt",
         "Stop trading: set the HALT file, cancel every opening order and close every "
         "position reduce-only, then cancel hl-guard's stops on each coin whose close filled. "
-        "A coin whose close fails keeps its stops. Only the user can lift a halt.",
+        "A coin whose close fails keeps its stops and is listed under refused and "
+        "unfinished. Only the user can lift a halt.",
         {},
         lambda w, a: w.halt(a),
         read_only=False,
