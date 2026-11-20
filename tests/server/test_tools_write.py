@@ -19,6 +19,7 @@ from mcp_types import TextContent
 from hl_guard.approval import cli as approval_cli
 from hl_guard.approval import model as approval_model
 from hl_guard.approval.cli import decide
+from hl_guard.exchange.actions import build_action
 from hl_guard.exchange.nonces import NonceManager
 from hl_guard.exchange.transport import ExchangeTransport
 from hl_guard.ledger.cli import latch_clear
@@ -26,7 +27,7 @@ from hl_guard.ledger.ledger import Kind, Ledger, Record
 from hl_guard.server import tools_write
 from hl_guard.server.app import StartupRefused, boot, build_server, serve, startup_lines
 from hl_guard.server.info import InfoRateLimited
-from hl_guard.server.tools_read import TOOLS
+from hl_guard.server.tools_read import TOOLS, ToolFailure
 from hl_guard.server.tools_write import (
     RISK_HEADROOM,
     ServeLockRefused,
@@ -115,7 +116,7 @@ def rest(args: dict[str, Any]) -> Callable[[Writer, list[Any]], Any]:
         asset = plan.market.asset_id
         if plan.set_leverage:
             change = {"asset": asset, "isCross": False, "leverage": 1}
-            writer._send(pid, tools_write.build_action("updateLeverage", change), 0)
+            writer._send(pid, build_action("updateLeverage", change), 0)
         entry = {
             "a": asset,
             "b": order.is_buy,
@@ -127,7 +128,7 @@ def rest(args: dict[str, Any]) -> Callable[[Writer, list[Any]], Any]:
         }
         try:
             (outcome,) = writer._send_orders(pid, [(order.coin, entry)], 0)
-        except tools_write.ToolFailure as exc:
+        except ToolFailure as exc:
             return True, {"error": exc.kind.value, "detail": exc.detail}
         return False, json.loads(json.dumps(dataclasses.asdict(outcome), default=str))
 
@@ -553,7 +554,7 @@ def test_cancel_takes_an_opening_order_and_keeps_reduce_only_ones(
     )
 
     assert (out[0][1]["result"], out[0][1]["status"]) == ("placed", "resting")
-    assert gone == {"id": gone["id"], "oid": oid, "result": "cancelled"}
+    assert gone == {"id": gone["id"], "oid": oid, "result": "cancelled", "warning": None}
     assert (kept["result"], kept["rule"]) == ("rejected", "protects_position")
     assert (missing["result"], missing["rule"]) == ("rejected", "no_order")
     assert [o["oid"] for o in venue.orders] == [77]
@@ -1724,9 +1725,9 @@ def test_an_approval_waiting_for_budget_retries_on_the_elapsed_clock(
     evaluated: list[str] = []
     real = Writer._evaluate
 
-    def counted(self: Writer, pid: str, order: Any) -> Any:
+    def counted(self: Writer, pid: str, order: Any, reconcile: bool = False) -> Any:
         evaluated.append(pid)
-        return real(self, pid, order)
+        return real(self, pid, order, reconcile)
 
     def waiting(writer: Writer, out: list[Any]) -> list[int]:
         writer.poll()
@@ -2034,7 +2035,7 @@ def test_an_approval_written_in_time_during_the_expiry_pass_is_honoured(
 def test_an_unknown_error_after_an_approval_records_a_failed_decision(
     config: Path, venue: Venue, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(self: Writer, pid: str, order: Any) -> Any:
+    def boom(self: Writer, pid: str, order: Any, reconcile: bool = False) -> Any:
         raise KeyError("surprise")
 
     def run(writer: Writer, out: list[Any]) -> Any:

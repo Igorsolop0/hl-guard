@@ -162,6 +162,7 @@ class Rejected:
     rule: str
     detail: str
     result: Literal["rejected"] = "rejected"
+    warning: str | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,7 @@ class PendingApproval:
     order: Mapping[str, Any]
     approve_with: str
     result: Literal["pending_approval"] = "pending_approval"
+    warning: str | None = None
 
 
 @dataclass(frozen=True)
@@ -191,6 +193,7 @@ class Cancelled:
     id: str
     oid: int
     result: Literal["cancelled"] = "cancelled"
+    warning: str | None = None
 
 
 Outcome = Rejected | PendingApproval | Placed
@@ -293,6 +296,24 @@ def _serve_locks(rt: Runtime) -> tuple[int, ...]:
         raise
 
 
+R = TypeVar("R")
+
+
+def _warned(warning: str | None, run: Callable[[], R]) -> R:
+    """Put the warning of a reconcile that ran before the tool into its answer."""
+    try:
+        outcome = run()
+    except ToolFailure as exc:
+        if warning:
+            raise ToolFailure(exc.kind, f"{exc.detail}; {warning}") from None
+        raise
+    if not warning or not dataclasses.is_dataclass(outcome) or isinstance(outcome, type):
+        return outcome
+    current = getattr(outcome, "warning", None)
+    text = warning if current is None else f"{warning}; {current}"
+    return dataclasses.replace(outcome, warning=text)
+
+
 def protection_of_coin(kids: ChildFold, coin: str) -> dict[str, Any]:
     return {c.cloid: c.view() for c in kids.open_children(coin)}
 
@@ -357,6 +378,7 @@ class Writer:
     last_state: tuple[AccountState, int, int] | None = None
     seen_seq: int = 0
     seen_size: int = -1
+    start_warning: str | None = None
 
     @classmethod
     def start(cls, rt: Runtime) -> Writer:
@@ -389,7 +411,7 @@ class Writer:
             writer._set_halt(lost[0], f"{len(lost)} orders from before the restart have no outcome")
         writer.seen_seq = len(rt.records())
         rt.risk()  # fold the ledger now rather than in the first tool call
-        writer.reconcile_children()
+        writer.start_warning = writer.reconcile_children()
         return writer
 
     def _queue_answered(self, answered: list[Proposal]) -> None:
@@ -584,13 +606,14 @@ class Writer:
                 return self._reject(pid, Check.PRICE_TICK, detail)
         return None
 
-    def _evaluate(self, pid: str, order: Order) -> Rejected | _Plan:
+    def _evaluate(self, pid: str, order: Order, reconcile: bool = False) -> Rejected | _Plan:
         market = self._listing(order.coin)
         refused = self._format_reject(pid, order, market)
         if refused is not None:
             return refused
         book = self._read_book()
-        self.reconcile_children(rows=book.orders)
+        if reconcile:
+            self.reconcile_children(rows=book.orders)
         unread = self._fills_unread_reason(book)
         if unread is not None:
             return self._reject(pid, Check.FILLS_UNREAD, unread)
@@ -653,11 +676,14 @@ class Writer:
             take_profit_px=args.get("take_profit_px"),
             leverage=args["leverage"],
         )
+        warning = self._stop_warning()
         pid = secrets.token_hex(6)
         body = order.as_json()
         digest = proposal_hash(pid, self.rt.network, self.rt.config.account, body)
         self._propose("propose_order", body, digest, pid)
-        return self._guarded(pid, lambda: self._propose_entry(pid, order, digest))
+        return _warned(
+            warning, lambda: self._guarded(pid, lambda: self._propose_entry(pid, order, digest))
+        )
 
     def _propose_entry(self, pid: str, order: Order, digest: str) -> Outcome:
         refused = self._reject_without_read(pid, order)
@@ -797,7 +823,7 @@ class Writer:
         except ShapeError:
             self._unknown(pid, "the exchange answer has an unknown shape")
         match ack:
-            case Refused(message):
+            case Refused(message):  # unreachable until the parser accepts the t9 ack shape
                 self._decide(pid, Status.FAILED, Check.EXCHANGE, message, cloids=list(cloids))
                 return Rejected(pid, Check.EXCHANGE, message)
             case Resting(oid):
@@ -1060,36 +1086,46 @@ class Writer:
         self._record(Kind.ERROR, {"id": pid, "detail": text[:1000]})
         return text
 
+    def _stop_warning(self) -> str | None:
+        """The warning of the reconcile that this write call runs, and of the one
+        at server start, which no call has answered with yet."""
+        found = [w for w in (self.start_warning, self.reconcile_children()) if w]
+        self.start_warning = None
+        return "; ".join(found) or None
+
     def reconcile_children(
         self, headroom: int = 0, rows: tuple[OrderRow, ...] | None = None
-    ) -> None:
+    ) -> str | None:
         """Check every open own child against its row and its parent's fill: learn
         oids, settle the ones that left the book, shrink the oversized ones. A
         failed read is recorded and never stops the tool that called this. An
-        entry passes the rows of its own book read, so the check costs it no read."""
+        approved entry passes the rows of its own book read. Returns the warning of
+        a stop it could not shrink, for the answer of the tool that called it."""
         try:
-            self._reconcile_children(headroom, rows)
+            return self._reconcile_children(headroom, rows)
         except Exception as exc:
             failure = as_failure(exc)
             if failure is None:
                 raise
             self._record(Kind.ERROR, {"detail": f"stop reconcile: {failure.detail}"})
+            return None
 
-    def _reconcile_children(self, headroom: int, rows: tuple[OrderRow, ...] | None) -> None:
+    def _reconcile_children(self, headroom: int, rows: tuple[OrderRow, ...] | None) -> str | None:
         open_now = self.kids().open_children()
         if not open_now:
-            return
+            return None
         if self.fills.fold().unresolved:
             self._reconcile_or_record("reconcile")
         if rows is None:
             rows = self._open_rows(headroom)
         if rows is None:
-            return
+            return None
         by_cloid = {o.cloid: o for o in rows if o.cloid}
         sent = self.fills.fold().sent
         oversized: dict[str, list[tuple[Child, Decimal]]] = {}
         unfilled: list[Child] = []
         fired = False
+        warnings: list[str] = []
         for c in self.kids().open_children():
             row = by_cloid.get(c.cloid)
             target = self.kids().target(c)
@@ -1113,9 +1149,12 @@ class Writer:
             market = self.rt.market(coin, LISTING_TTL_MS, headroom)
             pid = self._guard({"entry": entry, "coin": coin, "size": wire(size)})
             kids = [self.kids().children[c.cloid] for c, _ in items]
-            self._shrink(pid, kids, size, market, market.mark_px)
+            warning = self._shrink(pid, kids, size, market, market.mark_px)
+            if warning is not None:
+                warnings.append(warning)
         if fired:
             self._reconcile_or_record("reconcile")
+        return "; ".join(warnings) or None
 
     def _settle_child(self, c: Child, target: Decimal | None) -> bool:
         """A child that left the book: the exchange cancels the children of an
@@ -1234,10 +1273,10 @@ class Writer:
         return build_account(self._now(), Decimal(1), exchange, nothing)
 
     def close(self, args: Mapping[str, Any]) -> Outcome:
-        self.reconcile_children()
+        warning = self._stop_warning()
         coin, size = args["coin"], args.get("size")
         pid = self._propose("close_position", {"coin": coin, "size": size and wire(size)})
-        return self._guarded(pid, lambda: self._close(pid, coin, size))
+        return _warned(warning, lambda: self._guarded(pid, lambda: self._close(pid, coin, size)))
 
     def _close(self, pid: str, coin: str, size: Decimal | None) -> Outcome:
         age = self._no_position_lately(coin)
@@ -1318,10 +1357,10 @@ class Writer:
         return {"after": after, "warning": "; ".join(warnings) or None}
 
     def cancel(self, args: Mapping[str, Any]) -> Rejected | Cancelled:
-        self.reconcile_children()
+        warning = self._stop_warning()
         coin, oid = args["coin"], args["oid"]
         pid = self._propose("cancel_order", {"coin": coin, "oid": oid})
-        return self._guarded(pid, lambda: self._cancel(pid, coin, oid))
+        return _warned(warning, lambda: self._guarded(pid, lambda: self._cancel(pid, coin, oid)))
 
     def _cancel(self, pid: str, coin: str, oid: int) -> Rejected | Cancelled:
         rows = parse_open_orders(self.rt.user_post("frontendOpenOrders"))
@@ -1360,9 +1399,12 @@ class Writer:
         return refused
 
     def halt(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        self.reconcile_children()
+        warning = self._stop_warning()
         pid = self._propose("halt", {})
-        return self._guarded(pid, lambda: self._halt(pid))
+        report = self._guarded(pid, lambda: self._halt(pid))
+        if warning:
+            report["unfinished"].insert(0, f"stops: {warning}")
+        return report
 
     def _halt(self, pid: str) -> dict[str, Any]:
         """Each phase runs even when the one before it failed; what did not finish
@@ -1559,7 +1601,7 @@ class Writer:
             self._reject(p.id, *problem)
             return
         try:
-            plan = self._evaluate(p.id, p.order)
+            plan = self._evaluate(p.id, p.order, reconcile=True)
             if isinstance(plan, _Plan):
                 self._decide(p.id, Status.ALLOWED, detail="the user approved it")
                 self._place(p.id, p.order, plan, deadline)

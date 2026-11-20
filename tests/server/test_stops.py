@@ -186,10 +186,12 @@ def test_a_stop_that_fired_books_its_fill_into_the_loss_streak(
 
 
 def _entry_id(config: Path) -> str:
-    return next(
-        r.payload["id"]
-        for r in records(config)
-        if r.kind is Kind.PROPOSAL and r.payload["tool"] == "propose_order"
+    return str(
+        next(
+            r.payload["id"]
+            for r in records(config)
+            if r.kind is Kind.PROPOSAL and r.payload["tool"] == "propose_order"
+        )
     )
 
 
@@ -386,3 +388,66 @@ def test_an_entry_at_the_weight_floor_is_evaluated_with_a_stop_on_the_book(
 
     assert len(children(venue)) == 1
     assert [out[i][1]["result"] for i in (3, 5)] == ["pending_approval", "pending_approval"]
+
+
+def test_a_reconcile_that_cannot_shrink_a_stop_warns_in_the_answer_of_the_call(
+    never: Path, venue: Venue
+) -> None:
+    """A stop enlarged in the app cannot be shrunk to the lot, since the signer
+    only lets a stop get smaller than its recorded size: the next write call
+    cancels it, closes the lot and says so in its own answer."""
+    run(never, ("propose_order", BTC))
+    venue.positions["BTC"] = Position(Decimal("0.0005"), Decimal(81171), 1)
+    for o in children(venue):
+        o["s"] = "0.0003"
+
+    ((_, out),) = run(never, ("cancel_order", {"coin": "BTC", "oid": 1}))
+
+    assert out["warning"].startswith("WARNING: the stop could not be shrunk to the 0.0002 BTC")
+    assert children(venue) == []
+    assert venue.positions["BTC"].size == Decimal("0.0003")
+
+
+def test_a_propose_under_halt_still_shrinks_an_oversized_stop_first(
+    never: Path, venue: Venue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    venue.liquidity["BTC"] = Decimal("0.0001")
+    with monkeypatch.context() as died:
+        died.setattr(Writer, "_protect", lambda *args: None)
+        died.setattr(Writer, "reconcile_children", lambda *a, **k: None)
+        run(never, ("propose_order", WITH_TP))
+    assert [o["s"] for o in children(venue)] == ["0.0002", "0.0002"]
+    (never.parent / "data" / "HALT").write_text("set by the user\n")
+    real_start = Writer.start
+
+    def start_without_reconcile(rt: Any) -> Writer:
+        with monkeypatch.context() as skipped:
+            skipped.setattr(Writer, "reconcile_children", lambda *a, **k: None)
+            return real_start(rt)
+
+    monkeypatch.setattr(Writer, "start", staticmethod(start_without_reconcile))
+
+    ((_, out),) = run(never, ("propose_order", BTC))
+
+    assert out["rule"] == "halted"
+    assert [o["s"] for o in children(venue)] == ["0.0001", "0.0001"]
+
+
+def test_the_stops_of_a_grouped_entry_are_never_left_unresolved(
+    never: Path, venue: Venue, fake: FakeInfo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the entry of a normalTpsl ORDER waits for an outcome; its children
+    have no oid in the ack and are tracked by the child records."""
+    monkeypatch.setattr(Writer, "_learn_children", lambda *args: None)
+
+    out = run(
+        never,
+        ("propose_order", WITH_TP),
+        lambda w, o: (False, w.status({"id": o[0][1]["id"]})),
+    )
+
+    placed, status = out[0][1], out[1][1]
+    assert status["oid"] == placed["oid"]
+    asked = [r["oid"] for r in fake.requests if r["type"] == "orderStatus"]
+    assert not {o["c"] for o in children(venue)} & set(asked)
+    assert not (never.parent / "data" / "HALT").exists()
