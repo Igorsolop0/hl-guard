@@ -1494,7 +1494,7 @@ def test_halt_closes_the_listed_positions_when_one_coin_is_unlisted(
     out = session(config, ("propose_order", ETH), approve(config), unlisted, ("halt", {}))
 
     halted = out[3][1]
-    assert halted["unfinished"] == [], halted
+    assert halted["unfinished"] == ["close ZZZ: refused: exchange: ZZZ is not a listed perp"]
     assert {c["coin"]: ("oid" in c) for c in halted["closes"]} == {"ETH": True, "ZZZ": False}
     assert (
         "ZZZ is not a listed perp"

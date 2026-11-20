@@ -329,6 +329,38 @@ def test_halt_with_a_close_refused_as_too_far_from_the_oracle_stays_halted_and_k
     assert (again["result"], again["rule"]) == ("rejected", "halted")
 
 
+def test_halt_lists_a_coin_refused_before_the_send_as_unfinished(never: Path, venue: Venue) -> None:
+    run(never, ("propose_order", WITH_TP))
+    venue.marks["ZZZ"] = Decimal(5)
+    venue.positions["ZZZ"] = Position(Decimal(3), Decimal(5), 1)
+
+    ((_, halted),) = run(never, ("halt", {}))
+
+    refused = "exchange: ZZZ is not a listed perp"
+    assert {"coin": "ZZZ", "refused": refused} in halted["closes"]
+    assert halted["unfinished"] == [f"close ZZZ: refused: {refused}"]
+    assert set(venue.positions) == {"ZZZ"}
+    assert (never.parent / "data" / "HALT").exists()
+
+
+def test_a_fallback_close_refused_as_too_far_from_the_oracle_never_says_the_stops_stay(
+    never: Path, venue: Venue
+) -> None:
+    venue.liquidity["BTC"] = Decimal("0.0001")
+    venue.modify_override = _refuse_modify
+    venue.exchange_override = _refuse_far_from_oracle(venue)
+
+    ((_, placed),) = run(never, ("propose_order", WITH_TP))
+
+    warning = placed["warning"]
+    assert (
+        "the close was refused: Price too far from oracle asset=0. The exchange refused the "
+        "close price as too far from its oracle; the BTC position is now 0.0001"
+    ) in warning
+    assert "stops stay" not in warning and "nothing was closed" not in warning
+    assert venue.positions["BTC"].size == Decimal("0.0001")
+
+
 def test_halt_cancels_the_stops_of_a_coin_it_closed(never: Path, venue: Venue) -> None:
     run(never, ("propose_order", WITH_TP))
 

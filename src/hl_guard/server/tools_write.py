@@ -1474,7 +1474,9 @@ class Writer:
         for coin, size in held:
             built = self._halt_close(pid, state, received, coin, abs(size), markets.get(coin))
             if isinstance(built, Rejected):
-                closes.append({"coin": coin, "refused": f"{built.rule}: {built.detail}"})
+                refused = f"{built.rule}: {built.detail}"
+                closes.append({"coin": coin, "refused": refused})
+                report["unfinished"].append(f"close {coin}: refused: {refused}")
             else:
                 wires.append((coin, built))
         for start in range(0, len(wires), BATCH_MAX):
