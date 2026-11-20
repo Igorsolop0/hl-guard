@@ -19,6 +19,7 @@ from mcp_types import TextContent
 from hl_guard.approval import cli as approval_cli
 from hl_guard.approval import model as approval_model
 from hl_guard.approval.cli import decide
+from hl_guard.exchange.actions import build_action
 from hl_guard.exchange.nonces import NonceManager
 from hl_guard.exchange.transport import ExchangeTransport
 from hl_guard.ledger.cli import latch_clear
@@ -26,7 +27,7 @@ from hl_guard.ledger.ledger import Kind, Ledger, Record
 from hl_guard.server import tools_write
 from hl_guard.server.app import StartupRefused, boot, build_server, serve, startup_lines
 from hl_guard.server.info import InfoRateLimited
-from hl_guard.server.tools_read import TOOLS
+from hl_guard.server.tools_read import TOOLS, ToolFailure
 from hl_guard.server.tools_write import (
     RISK_HEADROOM,
     ServeLockRefused,
@@ -94,6 +95,42 @@ def approve(config: Path, approved: bool = True) -> Callable[[Writer, list[Any]]
         code, lines = decide(config, last_id(out), approved)
         writer.poll()
         return code, lines
+
+    return run
+
+
+def rest(args: dict[str, Any]) -> Callable[[Writer, list[Any]], Any]:
+    """A resting Gtc entry with no stops on the exchange, as hl-guard 0.1.0 placed
+    it: the gate passes it, then the plain order goes out. The ledger of a server
+    upgraded to 0.2.0 can still hold one, and its fills must still be booked."""
+
+    def run(writer: Writer, out: list[Any]) -> Any:
+        body = {"tif": "Gtc", "leverage": 1, "take_profit_px": None, **args}
+        order = approval_model.order_from_json(body)
+        assert order is not None
+        pid = writer._propose("propose_order", order.as_json())
+        plan = writer._evaluate(pid, order)
+        if isinstance(plan, tools_write.Rejected):
+            return False, dataclasses.asdict(plan)
+        writer._decide(pid, approval_model.Status.ALLOWED, detail="a 0.1.0 entry")
+        asset = plan.market.asset_id
+        if plan.set_leverage:
+            change = {"asset": asset, "isCross": False, "leverage": 1}
+            writer._send(pid, build_action("updateLeverage", change), 0)
+        entry = {
+            "a": asset,
+            "b": order.is_buy,
+            "p": args["limit_px"],
+            "s": args["size"],
+            "r": False,
+            "t": {"limit": {"tif": "Gtc"}},
+            "c": tools_write._cloid(),
+        }
+        try:
+            (outcome,) = writer._send_orders(pid, [(order.coin, entry)], 0)
+        except ToolFailure as exc:
+            return True, {"error": exc.kind.value, "detail": exc.detail}
+        return False, json.loads(json.dumps(dataclasses.asdict(outcome), default=str))
 
     return run
 
@@ -216,8 +253,10 @@ def test_approval_always_waits_then_approve_places_the_order(config: Path, venue
         "decision:allowed",
         "order",
         "ack",
+        "child",
         "order",
         "ack",
+        "decision:placed",
         "decision:placed",
         "fill",
     ]
@@ -418,7 +457,7 @@ def test_close_sends_a_reduce_only_ioc_at_the_exit_cap(config: Path, venue: Venu
     assert closed["result"] == "placed"
     assert closed["status"] == "filled"
     assert positions == []
-    order = venue.actions[-1]["orders"][0]
+    order = [a for a in venue.actions if a["type"] == "order"][-1]["orders"][0]
     assert (order["r"], order["t"], order["b"], order["s"]) == (
         True,
         {"limit": {"tif": "Ioc"}},
@@ -479,8 +518,7 @@ def test_halt_cancels_opening_orders_closes_positions_and_blocks_entries(
     }
     out = session(
         config,
-        ("propose_order", resting),
-        approve(config),
+        rest(resting),
         ("propose_order", eth),
         approve(config),
         lambda w, o: venue.orders.append({**venue.orders[0], "oid": 99, "r": True}),
@@ -489,13 +527,14 @@ def test_halt_cancels_opening_orders_closes_positions_and_blocks_entries(
         ("open_orders", {}),
     )
 
-    halted = out[5][1]
+    halted = out[4][1]
     assert halted["result"] == "halted"
     assert len(halted["cancelled"]) == 1
     assert [c["coin"] for c in halted["closes"]] == ["ETH"]
+    assert [s["state"] for s in halted["stops"]["ETH"].values()] == ["cancelled"]
     assert venue.positions == {}
-    assert out[6][1]["rule"] == "halted"
-    assert [o["oid"] for o in out[7][1]] == [99]
+    assert out[5][1]["rule"] == "halted"
+    assert [o["oid"] for o in out[6][1]] == [99]
     assert (config.parent / "data" / "HALT").exists()
 
 
@@ -503,7 +542,7 @@ def test_cancel_takes_an_opening_order_and_keeps_reduce_only_ones(
     config: Path, venue: Venue
 ) -> None:
     resting = {**BTC, "limit_px": "81000"}
-    out = session(config, ("propose_order", resting), approve(config))
+    out = session(config, rest(resting))
     oid = next(r.payload["oid"] for r in records(config) if r.payload.get("outcome") == "placed")
     venue.orders.append({**venue.orders[0], "oid": 77, "r": True})
 
@@ -514,8 +553,8 @@ def test_cancel_takes_an_opening_order_and_keeps_reduce_only_ones(
         ("cancel_order", {"coin": "BTC", "oid": 5}),
     )
 
-    assert out[0][1]["result"] == "pending_approval"
-    assert gone == {"id": gone["id"], "oid": oid, "result": "cancelled"}
+    assert (out[0][1]["result"], out[0][1]["status"]) == ("placed", "resting")
+    assert gone == {"id": gone["id"], "oid": oid, "result": "cancelled", "warning": None}
     assert (kept["result"], kept["rule"]) == ("rejected", "protects_position")
     assert (missing["result"], missing["rule"]) == ("rejected", "no_order")
     assert [o["oid"] for o in venue.orders] == [77]
@@ -524,7 +563,7 @@ def test_cancel_takes_an_opening_order_and_keeps_reduce_only_ones(
 def test_a_resting_order_filled_later_is_recorded_on_the_next_call(
     config: Path, venue: Venue
 ) -> None:
-    session(config, ("propose_order", {**BTC, "limit_px": "81000"}), approve(config))
+    session(config, rest({**BTC, "limit_px": "81000"}))
     venue.fill_resting(venue.orders[0]["oid"])
 
     session(
@@ -552,13 +591,91 @@ def test_a_fill_the_exchange_reports_late_is_recorded_once(config: Path, venue: 
 
 
 def test_an_exchange_refusal_is_rejected_by_exchange(config: Path, venue: Venue) -> None:
-    venue.move("BTC", 90000)
-    ioc = {**BTC, "tif": "Ioc", "limit_px": "89600", "stop_loss_px": "88500", "size": "0.0002"}
+    def refuse(body: dict[str, Any]) -> Answer | None:
+        if body["action"]["type"] != "order":
+            return None
+        return 200, json.dumps({"status": "err", "response": "Insufficient margin"}).encode(), {}
 
-    _, _, (_, status) = session(config, ("propose_order", ioc), approve(config), _status_of())
+    venue.answer_after = refuse
+    _, _, (_, status) = session(config, ("propose_order", BTC), approve(config), _status_of())
 
     assert status["status"] == "failed"
-    assert status["detail"].startswith("exchange: Order could not immediately match")
+    assert status["detail"] == "exchange: exchange rejected: Insufficient margin"
+    assert status["protection"]["sl"]["state"] == "refused: exchange rejected: Insufficient margin"
+    assert not (config.parent / "data" / "HALT").exists()
+
+
+MISSED = "Order could not immediately match against any resting orders. asset=3"
+
+
+def test_a_missed_ioc_entry_is_refused_and_its_stops_are_never_placed(
+    config: Path, venue: Venue, fake: FakeInfo
+) -> None:
+    """T9: one error slot for the group, and no stop on the book."""
+    venue.move("BTC", 90000)
+    ioc = {**BTC, "limit_px": "89600", "stop_loss_px": "88500"}
+
+    out = session(config, ("propose_order", ioc), approve(config), _status_of(), ("positions", {}))
+
+    status = out[2][1]
+    assert status["status"] == "failed"
+    assert status["detail"] == f"exchange: {MISSED}"
+    assert status["protection"]["sl"]["state"] == f"refused: {MISSED}"
+    assert not (config.parent / "data" / "HALT").exists()
+    assert venue.orders == [] and venue.positions == {}
+    from hl_guard.server.children import fold_children
+
+    assert fold_children(records(config)).open_children() == []
+    before = len(fake.requests)
+    session(config, ("close_position", {"coin": "BTC"}))
+    assert "frontendOpenOrders" not in [r["type"] for r in fake.requests[before:]]
+
+
+def _missed_with(venue: Venue, stop_left: bool) -> Callable[[dict[str, Any]], Answer]:
+    def answer(body: dict[str, Any]) -> Answer:
+        action = body["action"]
+        if action["type"] != "order" or action.get("grouping") != "normalTpsl":
+            return venue._act(action)
+        if stop_left:
+            sl = action["orders"][1]
+            venue.next_oid += 1
+            row = {**sl, "coin": "BTC", "oid": venue.next_oid, "tif": None, "at": 0}
+            venue.orders.append(row | {"trigger": sl["t"]["trigger"]})
+        statuses = [{"error": MISSED}]
+        data = {"status": "ok", "response": {"type": "order", "data": {"statuses": statuses}}}
+        return 200, json.dumps(data).encode(), {}
+
+    return answer
+
+
+def test_a_refused_entry_with_a_stop_left_on_the_book_sets_the_halt_file(
+    config: Path, venue: Venue
+) -> None:
+    venue.exchange_override = _missed_with(venue, stop_left=True)
+
+    _, _, (_, status) = session(config, ("propose_order", BTC), approve(config), _status_of())
+
+    assert status["status"] == "failed"
+    assert "a refused entry left a stop on the book" in status["detail"]
+    assert (config.parent / "data" / "HALT").exists()
+
+
+def test_a_refused_entry_whose_stops_cannot_be_read_sets_the_halt_file(
+    config: Path, venue: Venue, fake: FakeInfo
+) -> None:
+    venue.exchange_override = _missed_with(venue, stop_left=False)
+    rows = fake.answers["frontendOpenOrders"]
+
+    def fail_after_the_send(body: dict[str, Any]) -> Answer:
+        sent = any(a["type"] == "order" for a in venue.actions)
+        return (500, b"", {}) if sent else rows(body)
+
+    fake.answers["frontendOpenOrders"] = fail_after_the_send
+
+    _, _, (_, status) = session(config, ("propose_order", BTC), approve(config), _status_of())
+
+    assert "the stops of a refused entry could not be checked" in status["detail"]
+    assert (config.parent / "data" / "HALT").exists()
 
 
 def test_an_unknown_outcome_sets_the_halt_file(config: Path, venue: Venue) -> None:
@@ -931,8 +1048,8 @@ def test_exchange_actions_spend_the_shared_weight_budget(config: Path, venue: Ve
 
     budget = json.loads((config.parent / "data" / "info-weight.json").read_text())
     spent = sum(w for _, w in budget["spent"])
-    meta, gate_pass, fills, actions = 20, 2 + 20 + 20, 21, 2
-    assert spent == meta + 2 * gate_pass + fills + actions
+    meta, gate_pass, fills, children, actions = 20, 2 + 20 + 20, 21, 20, 2
+    assert spent == meta + 2 * gate_pass + fills + children + actions
 
 
 def test_without_an_agent_key_only_read_tools_are_listed(
@@ -1098,15 +1215,14 @@ def test_a_close_reads_the_account_again_once_an_order_of_that_coin_rests(
 
     out = session(
         config,
-        ("propose_order", resting),
-        approve(config),
+        rest(resting),
         ("close_position", {"coin": "BTC"}),
         fills,
         ("close_position", {"coin": "BTC"}),
     )
 
-    assert out[2][1]["rule"] == "no_position"
-    assert out[4][1]["result"] == "placed"
+    assert out[1][1]["rule"] == "no_position"
+    assert out[3][1]["result"] == "placed"
 
 
 def test_a_close_reads_the_account_again_after_an_order_went_out(
@@ -1172,9 +1288,7 @@ def test_halt_cancels_and_closes_within_one_burst_beyond_the_cap(
     venue.leverage["ETH"] = ("isolated", 1)
     resting = {**BTC, "limit_px": "81000"}
 
-    out = session(
-        config, ("propose_order", resting), approve(config), fill_budget(config, 600), ("halt", {})
-    )
+    out = session(config, rest(resting), fill_budget(config, 600), ("halt", {}))
 
     halted = out[-1][1]
     assert halted["unfinished"] == []
@@ -1209,9 +1323,7 @@ def test_cancel_order_gets_no_weight_beyond_the_cap(config: Path, venue: Venue) 
             return "rate_limited"
         return "sent"
 
-    out = session(
-        config, ("propose_order", resting), approve(config), fill_budget(config, 600 - 20), cancel
-    )
+    out = session(config, rest(resting), fill_budget(config, 600 - 20), cancel)
 
     assert out[-1] == "rate_limited"
     assert len(venue.orders) == 1
@@ -1241,7 +1353,7 @@ SOL = {"coin": "SOL", "side": "buy", "size": "0.1", "limit_px": "103.62", "stop_
 
 
 def test_a_part_filled_order_records_each_fill_once(config: Path, venue: Venue) -> None:
-    session(config, ("propose_order", {**BTC, "limit_px": "81000"}), approve(config))
+    session(config, rest({**BTC, "limit_px": "81000"}))
     oid = venue.orders[0]["oid"]
     venue.fill_resting(oid, "0.0001")
 
@@ -1382,7 +1494,7 @@ def test_halt_closes_the_listed_positions_when_one_coin_is_unlisted(
     out = session(config, ("propose_order", ETH), approve(config), unlisted, ("halt", {}))
 
     halted = out[3][1]
-    assert halted["unfinished"] == [], halted
+    assert halted["unfinished"] == ["close ZZZ: refused: exchange: ZZZ is not a listed perp"]
     assert {c["coin"]: ("oid" in c) for c in halted["closes"]} == {"ETH": True, "ZZZ": False}
     assert (
         "ZZZ is not a listed perp"
@@ -1400,7 +1512,9 @@ def test_halt_still_closes_when_the_order_read_fails(
     out = session(config, ("propose_order", ETH), approve(config), broken, ("halt", {}))
 
     halted = out[3][1]
-    assert halted["unfinished"] == ["cancel: network: /info frontendOpenOrders: HTTP 500"]
+    cancel, stops = halted["unfinished"]
+    assert cancel == "cancel: network: /info frontendOpenOrders: HTTP 500"
+    assert stops.startswith("stops ETH: stops not confirmed cancelled: ")
     assert [c["coin"] for c in halted["closes"]] == ["ETH"]
     assert venue.positions == {}
     assert any(r.kind is Kind.ERROR for r in records(config))
@@ -1432,7 +1546,7 @@ def test_an_approval_in_time_places_even_when_the_poll_runs_late(
 def test_a_resting_order_that_filled_while_its_fill_lags_is_asked_about_and_recorded(
     config: Path, venue: Venue
 ) -> None:
-    session(config, ("propose_order", {**BTC, "limit_px": "81000"}), approve(config))
+    session(config, rest({**BTC, "limit_px": "81000"}))
     oid = venue.orders[0]["oid"]
     venue.fill_resting(oid)
     venue.fills_lag = 1
@@ -1449,7 +1563,7 @@ def test_a_resting_order_that_filled_while_its_fill_lags_is_asked_about_and_reco
 
 
 def test_a_cancelled_order_with_a_part_fill_keeps_the_part(config: Path, venue: Venue) -> None:
-    session(config, ("propose_order", {**BTC, "limit_px": "81000"}), approve(config))
+    session(config, rest({**BTC, "limit_px": "81000"}))
     oid = venue.orders[0]["oid"]
     venue.fill_resting(oid, "0.0001")
 
@@ -1671,9 +1785,9 @@ def test_an_approval_waiting_for_budget_retries_on_the_elapsed_clock(
     evaluated: list[str] = []
     real = Writer._evaluate
 
-    def counted(self: Writer, pid: str, order: Any) -> Any:
+    def counted(self: Writer, pid: str, order: Any, reconcile: bool = False) -> Any:
         evaluated.append(pid)
-        return real(self, pid, order)
+        return real(self, pid, order, reconcile)
 
     def waiting(writer: Writer, out: list[Any]) -> list[int]:
         writer.poll()
@@ -1859,7 +1973,7 @@ def test_a_failing_poll_is_reported_once_and_tried_again(
 def test_a_fill_seen_twice_across_lagging_reads_is_recorded_once(
     config: Path, venue: Venue
 ) -> None:
-    session(config, ("propose_order", {**BTC, "limit_px": "81000"}), approve(config))
+    session(config, rest({**BTC, "limit_px": "81000"}))
     oid = venue.orders[0]["oid"]
     venue.fill_resting(oid, "0.0001")
     session(config, ("propose_order", ETH))
@@ -1897,12 +2011,12 @@ def test_an_order_the_signer_refused_needs_no_answer_after_a_restart(
 
 
 PROTECTION = (
-    "stop-loss and take-profit recorded and checked by the gate, NOT placed: hl-guard "
-    "places no stop orders, so you or the client must place them"
+    "stop-loss and optional take-profit placed on the exchange with the Ioc entry as "
+    "reduce-only market triggers, sized to the filled lot"
 )
 
 
-def test_a_placed_entry_and_risk_status_say_the_stop_is_not_placed(
+def test_a_placed_entry_shows_its_live_stop_and_risk_status_says_how_stops_go_out(
     tmp_path: Path, durable: None, venue: Venue
 ) -> None:
     config = configure(tmp_path, policy={"approval": "never"})
@@ -1911,8 +2025,12 @@ def test_a_placed_entry_and_risk_status_say_the_stop_is_not_placed(
         config, ("propose_order", BTC), ("risk_status", {}), autonomous=True
     )
 
+    (row,) = venue.orders
     assert placed["result"] == "placed"
-    assert placed["protection"] == PROTECTION
+    assert placed["protection"] == {
+        "sl": {"cloid": row["c"], "trigger_px": "80000", "size": "0.0002", "state": "live"}
+    }
+    assert placed["warning"] is None
     assert risk["protection"] == PROTECTION
 
 
@@ -1928,8 +2046,8 @@ def test_serve_warns_that_entries_go_out_without_exchange_stops(
     lines = startup_lines(runtime, True)
 
     assert lines[1] == (
-        f"hl-guard serve: warning: with approval {word}, entries go out without "
-        "exchange-side stops; the stop-loss is checked by the gate, not placed"
+        f"hl-guard serve: warning: with approval {word}, entries go out with no "
+        "person in the loop; each carries its stop-loss on the exchange"
     )
 
 
@@ -1977,7 +2095,7 @@ def test_an_approval_written_in_time_during_the_expiry_pass_is_honoured(
 def test_an_unknown_error_after_an_approval_records_a_failed_decision(
     config: Path, venue: Venue, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(self: Writer, pid: str, order: Any) -> Any:
+    def boom(self: Writer, pid: str, order: Any, reconcile: bool = False) -> Any:
         raise KeyError("surprise")
 
     def run(writer: Writer, out: list[Any]) -> Any:

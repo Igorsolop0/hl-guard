@@ -18,6 +18,7 @@ from hl_guard.exchange.halt import HaltFlag
 from hl_guard.ledger.ledger import Kind, Ledger, LedgerError, Record, Tail
 from hl_guard.policy.gate import drawdown, gross_exposure_usd
 from hl_guard.policy.model import ApproveAboveUsd, ApproveAlways, Policy, Rule, in_size
+from hl_guard.server.children import fold_children, stop_warnings
 from hl_guard.server.config import ServeConfig
 from hl_guard.server.info import InfoClient, InfoRateLimited, InfoRefused, InfoUnavailable
 from hl_guard.server.parse import (
@@ -415,7 +416,13 @@ def _account(rt: Runtime, args: Mapping[str, Any]) -> Any:
 
 
 def _positions(rt: Runtime, args: Mapping[str, Any]) -> Any:
-    return _state(rt).positions
+    positions = _state(rt).positions
+    records = rt.records()
+    kids = fold_children(records)
+    return [
+        dataclasses.asdict(p) | {"stop_warnings": stop_warnings(kids, records, p.coin, p.size)}
+        for p in positions
+    ]
 
 
 def _open_orders(rt: Runtime, args: Mapping[str, Any]) -> Any:
@@ -560,7 +567,11 @@ TOOLS: Mapping[str, Tool[Runtime]] = {
         Tool(
             "positions",
             "Read the configured account's open perp positions with size, entry price, "
-            "leverage and unrealized PnL. An account with no positions reads as an empty list.",
+            "leverage and unrealized PnL. An account with no positions reads as an empty list. "
+            "stop_warnings lists each open hl-guard stop on the coin, as the ledger records it, "
+            "that is larger than hl-guard's own lot: its own net fills, capped by the position. "
+            "A trade made in the app on the same coin can hide this, since hl-guard cannot tell "
+            "the user's coins from its own. This tool never changes a stop.",
             {},
             _positions,
         ),

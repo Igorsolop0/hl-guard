@@ -58,6 +58,21 @@ REJECTIONS: list[tuple[str, dict[str, Any], dict[str, Any], Proposal, Rule]] = [
     ("no stop-loss", {}, {}, entry(stop_loss_px=None), Rule.STOP_LOSS_REQUIRED),
     ("stop above a buy", {}, {}, entry(stop_loss_px=Decimal(101)), Rule.STOP_LOSS_REQUIRED),
     (
+        "a buy stop-loss on the profit side of limit and mark",
+        {},
+        {},
+        entry(stop_loss_px=Decimal("100.5"), take_profit_px=None),
+        Rule.STOP_LOSS_REQUIRED,
+    ),
+    ("a buy against a short", {}, SHORT_BTC, entry(), Rule.OPPOSITE_POSITION),
+    (
+        "a sell against a long",
+        {},
+        LONG_BTC,
+        entry(is_buy=False, stop_loss_px=Decimal(101), take_profit_px=None),
+        Rule.OPPOSITE_POSITION,
+    ),
+    (
         "stop above the mark of a marketable buy",
         {"price_band_pct_max": 5},
         {"assets": _asset(mark_px=98)},
@@ -402,6 +417,13 @@ def test_every_rule_has_a_rejection_case() -> None:
 ALLOWED: list[tuple[str, dict[str, Any], dict[str, Any], Proposal]] = [
     ("a plain entry", {}, {}, entry()),
     ("no target", {}, {}, entry(take_profit_px=None)),
+    ("a buy that adds to a long", {}, LONG_BTC, entry()),
+    (
+        "a sell that adds to a short",
+        {},
+        SHORT_BTC,
+        entry(is_buy=False, stop_loss_px=Decimal(101), take_profit_px=None),
+    ),
     ("stop exactly at the cap", {}, {}, entry(stop_loss_px=Decimal(98))),
     (
         "a short stop just inside the liquidation price at 5x on a 5x coin",

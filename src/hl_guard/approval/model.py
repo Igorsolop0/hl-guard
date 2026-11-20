@@ -22,12 +22,13 @@ from hl_guard.ledger.ledger import Kind, Record
 from hl_guard.policy.model import Policy, Rule
 from hl_guard.server.snapshot import GATE_CONTEXT
 
-NOT_PLACED = (
-    "recorded and checked by the gate, NOT placed: hl-guard places no stop orders, "
-    "so you or the client must place them"
+PLACED_WITH_ENTRY = (
+    "placed on the exchange with the Ioc entry as reduce-only market triggers, "
+    "sized to the filled lot"
 )
-PROTECTION = f"stop-loss and take-profit {NOT_PLACED}"
+PROTECTION = f"stop-loss and optional take-profit {PLACED_WITH_ENTRY}"
 MIN_NOTIONAL = "min_notional"
+IOC_ONLY = "ioc_only"
 
 Tif = Literal["Gtc", "Ioc", "Alo"]
 TIFS: tuple[Tif, ...] = ("Gtc", "Ioc", "Alo")
@@ -107,6 +108,9 @@ def offline_problem(policy: Policy, order: Order) -> Refusal | None:
         )
     if order.stop_loss_px is None:
         return Refusal(Rule.STOP_LOSS_REQUIRED, "every entry needs a stop-loss price")
+    if order.tif != "Ioc":
+        detail = f"tif {order.tif}: an entry carries its stops, so it is Ioc only"
+        return Refusal(IOC_ONLY, detail)
     if order.leverage > policy.leverage_max:
         return Refusal(
             Rule.LEVERAGE_MAX, f"leverage {order.leverage}x is above {policy.leverage_max}x"
@@ -163,7 +167,10 @@ def _text(payload: Mapping[str, Any], key: str) -> str:
 
 
 def _decided(p: Proposal, record: Record) -> Proposal:
+    """A decision that names a ``child`` is about a stop child, not the entry."""
     payload = record.payload
+    if "child" in payload:
+        return p
     raw = payload.get("outcome")
     if not isinstance(raw, str) or raw not in Status.__members__.values():
         return p
@@ -240,5 +247,5 @@ def summary(order: Mapping[str, Any]) -> str:
         f"{order.get('limit_px')} {order.get('tif')} at {order.get('leverage')}x isolated, "
         f"stop-loss {stop}"
         + (f", take-profit {target}" if target is not None else "")
-        + f" ({NOT_PLACED})"
+        + f" ({PLACED_WITH_ENTRY})"
     )

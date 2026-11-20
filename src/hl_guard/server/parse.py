@@ -527,7 +527,7 @@ def exchange_text(v: Any) -> str:
     return text[:EXCHANGE_TEXT_MAX]
 
 
-def _statuses(raw: Any, at: _At, kind: str, n: int) -> list[Any]:
+def _statuses(raw: Any, at: _At, kind: str, n: int, *, exact: bool = True) -> list[Any]:
     o = _obj(raw, at, frozenset({"status", "response"}))
     _same(o["status"], at["status"], "ok")
     ra = at["response"]
@@ -535,7 +535,7 @@ def _statuses(raw: Any, at: _At, kind: str, n: int) -> list[Any]:
     _same(response["type"], ra["type"], kind)
     data = _obj(response["data"], ra["data"], frozenset({"statuses"}))
     statuses = _list(data["statuses"], ra["data"]["statuses"], n)
-    if len(statuses) != n:
+    if exact and len(statuses) != n:
         raise ra["data"]["statuses"].fail(f"holds {len(statuses)} statuses for {n} items")
     return statuses
 
@@ -571,6 +571,46 @@ def parse_order_acks(raw: Any, cloids: tuple[str, ...]) -> tuple[OrderAck, ...]:
     at = _At("exchange order")
     statuses = _statuses(raw, at, "order", len(cloids))
     return tuple(_order_ack(v, at[i], cloids[i]) for i, v in enumerate(statuses))
+
+
+ChildSlot = Literal["waitingForFill", "waitingForTrigger"]
+_CHILD_SLOT: Mapping[type, ChildSlot] = {Resting: "waitingForFill", Filled: "waitingForTrigger"}
+
+
+def parse_entry_acks(raw: Any, cloids: tuple[str, ...]) -> tuple[OrderAck, tuple[ChildSlot, ...]]:
+    """The ack of a normalTpsl entry: the entry's slot, then one bare string per
+    child, ``waitingForFill`` for a resting entry and ``waitingForTrigger`` for a
+    filled one. A child slot has no oid. A refused entry answers one error slot
+    for the whole group, and its children are never placed (testnet T9). Any
+    other child slot or count is an unknown shape."""
+    at = _At("exchange order")
+    statuses = _statuses(raw, at, "order", len(cloids), exact=False)
+    if len(statuses) == 1 and len(cloids) > 1:
+        refused = _order_ack(statuses[0], at[0], cloids[0])
+        if not isinstance(refused, Refused):
+            raise at.fail(f"holds 1 status for {len(cloids)} orders that is not an error")
+        return refused, ()
+    if len(statuses) != len(cloids):
+        raise at.fail(f"holds {len(statuses)} statuses for {len(cloids)} orders")
+    entry = _order_ack(statuses[0], at[0], cloids[0])
+    slot = _CHILD_SLOT.get(type(entry))
+    for i, v in enumerate(statuses[1:], start=1):
+        if slot is None or v != slot:
+            raise at[i].fail(f"expected the child slot {slot!r} after {type(entry).__name__}")
+    return entry, tuple(slot for _ in statuses[1:] if slot is not None)
+
+
+def parse_modify_acks(raw: Any, cloids: tuple[str, ...]) -> tuple[Resting | Refused, ...]:
+    """A batchModify answers like an order: each modified child rests again
+    under a new oid, with the same cloid."""
+    at = _At("exchange batchModify")
+    acks: list[Resting | Refused] = []
+    for i, v in enumerate(_statuses(raw, at, "order", len(cloids))):
+        ack = _order_ack(v, at[i], cloids[i])
+        if isinstance(ack, Filled):
+            raise at[i].fail("a modified stop child cannot fill at once")
+        acks.append(ack)
+    return tuple(acks)
 
 
 def parse_cancel_acks(raw: Any, n: int) -> tuple[Refused | None, ...]:

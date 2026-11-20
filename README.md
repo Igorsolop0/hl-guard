@@ -15,21 +15,33 @@ this project makes no claim about returns.
 > through bugs, wrong settings or market moves. Use it at your own risk, and
 > run it on the Hyperliquid testnet before you give it real funds.
 
-## What hl-guard does not do
+## Stops on the exchange
 
 > [!IMPORTANT]
-> **hl-guard does not place stop-loss or take-profit orders.** Every entry must
-> name a stop-loss price, and the risk gate checks it, but hl-guard only
-> records that price in the ledger and shows it to you. It does not send it to
-> the exchange. After an entry fills, you or the model must place the stop,
-> for example in the Hyperliquid app. Until then the position has no stop on
-> the exchange.
+> **Every entry carries its stop-loss on the exchange.** Each entry must name
+> a stop-loss price and may name a take-profit price. hl-guard sends both
+> with the entry, in one action, as reduce-only market triggers on
+> Hyperliquid, so an entry is Ioc only: it fills at once or not at all. The
+> stop is on the exchange from the moment of the fill, sized to the filled
+> lot. hl-guard shrinks the stop right after a partial fill. If the server
+> stops between the fill and the shrink, it fixes the stop on its next start
+> or next write call. Until then the stop can be larger than the lot.
+>
+> A close of hl-guard's lot in the Hyperliquid app leaves its stops on the
+> exchange, and they can then sell coins you hold on the same side. Cancel
+> them in the app. hl-guard cannot always tell your coins from its own:
+> `positions` warns only when a stop is larger than the position, or larger
+> than what hl-guard's own fills left open.
+
+## What hl-guard does not do
 
 hl-guard also does not:
 
 - move funds. It has no withdraw or transfer tool, and it never builds a
   withdrawal, transfer, vault or sub-account action for the agent key to sign.
 - trade spot, open cross-margin positions, or go above 5x leverage.
+- open an entry against a position on the other side of the same coin. The
+  gate refuses it, because the reduce-only stops would protect nothing.
 - take an approval from the chat. You approve in a terminal with
   `hl-guard approve`.
 - protect you from a client that can run shell commands as your user. Such a
@@ -48,9 +60,10 @@ hl-guard also does not:
   `proposal_status`.
 - **A risk gate.** Every entry passes the limits in your policy: coins, size
   per order, total exposure, leverage, open orders, entries per day, cooldown
-  per coin, daily loss, loss streak, a required stop-loss, a price band around
-  the mark and a fresh account read. Product hard ceilings bound every limit.
-  See [docs/policy.md](docs/policy.md).
+  per coin, daily loss, loss streak, a required stop-loss on the loss side of
+  the limit and the mark, no entry against an opposite position, a price band
+  around the mark and a fresh account read. Product hard ceilings bound every
+  limit. See [docs/policy.md](docs/policy.md).
 - **Out-of-band approval.** With `approval: always`, as in the example
   policy, every entry waits until you run
   `hl-guard approve PROPOSAL_ID` in a terminal and type `yes`. No tool approves, and
@@ -69,7 +82,7 @@ hl-guard also does not:
 
 ## Status and review
 
-Pre-alpha, version 0.1.0. Test it on the Hyperliquid testnet before you point
+Pre-alpha, version 0.2.0. Test it on the Hyperliquid testnet before you point
 it at real funds. Expect breaking changes.
 
 - The exchange core, the signer and the action allowlist are ported from a
@@ -77,6 +90,8 @@ it at real funds. Expect breaking changes.
   2026.
 - The hl-guard server, that is the MCP tools, the approval and the policy
   gate, has a large offline test suite and end-to-end runs on the testnet.
+  The stops of 0.2.0 were probed on the testnet with a script; the
+  end-to-end lane for them, `tools/e2e/run.sh --lane tpsl`, has not run yet.
   It has had no independent human security review yet. Reports are welcome,
   see [SECURITY.md](SECURITY.md).
 

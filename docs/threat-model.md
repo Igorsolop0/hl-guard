@@ -28,9 +28,14 @@ the code on `main`. Report a flaw privately, see
 ## Controls that hold even if the model is hostile
 
 1. **No withdrawal path.** hl-guard never builds a withdrawal, a transfer,
-   a vault or a sub-account action. It builds only 6 action types: `order`,
-   `cancel`, `cancelByCloid`, `scheduleCancel`, `updateLeverage` and
-   `updateIsolatedMargin`, and the signer refuses anything else. A test fails
+   a vault or a sub-account action. It builds only 7 action types: `order`,
+   `batchModify`, `cancel`, `cancelByCloid`, `scheduleCancel`,
+   `updateLeverage` and `updateIsolatedMargin`, and the signer refuses
+   anything else. A grouped `order` is only an Ioc entry followed by its
+   stop-loss and an optional take-profit, each a reduce-only market trigger
+   of the entry's size on the exit side. A `batchModify` only shrinks a stop
+   that the ledger records: by its cloid, with the same asset, side, price,
+   trigger and type, and a smaller size. A test fails
    the build if a helper for a user-signed action, such as a withdrawal or a
    USD or spot send, appears in the package. The one exception is the
    approve page of `hl-guard init`, which builds the `approveAgent` message
@@ -43,9 +48,10 @@ the code on `main`. Report a flaw privately, see
    decision, the order and the exchange answer. The server loads the policy
    once at start. A change needs a restart by you.
 3. **Every entry passes the risk gate.** Coins, size per order, total
-   exposure, leverage, a required stop-loss, the take-profit cap, the price
-   band, data freshness, daily loss, loss streak, cooldown, entries per day
-   and open orders. The gate runs in the server process after the arguments
+   exposure, leverage, a required stop-loss on the loss side of the limit and
+   a fresh mark, the take-profit cap, no entry against a position on the
+   other side, the price band, data freshness, daily loss, loss streak,
+   cooldown, entries per day and open orders. The gate runs in the server process after the arguments
    are parsed and before anything is signed. Product hard ceilings bound
    every limit.
 4. **Approval happens outside the chat.** With `approval: always`, you
@@ -61,19 +67,58 @@ the code on `main`. Report a flaw privately, see
    buy no higher than `close_buy_cap` times it. Accepted risk at both ends:
    with a floor of 0.95 a close is refused while the mark lags the book by
    more than 5 %; with a floor of 0.1 a sell on a stale mark can fill far
-   below it.
-6. **Pinned endpoints.** hl-guard posts only to the pinned Hyperliquid URL of
+   below it. A close the exchange refuses, for example as "Price too far
+   from oracle", keeps its stops, and `halt` keeps HALT set.
+6. **SL (and optional TP) on the exchange for every hl-guard entry, sized to
+   the filled lot.** The stops go out with the entry in one action, so the
+   stop is on the exchange from the moment of the fill. Hyperliquid does not
+   check the side of a stop: on testnet a stop-loss on the wrong side fired
+   about one second after the fill. The gate's side and distance check on a
+   fresh mark is the guard, and it runs before signing. A hostile model
+   cannot widen the stop: the gate caps the distance and the signer pins the
+   shape. hl-guard shrinks the stop right after a partial fill. If the server
+   stops between the fill and the shrink, it fixes the stop on its next start
+   or next write call. A `close_position` comes out of hl-guard's own lot
+   first; its stops are cancelled when that lot is gone and shrunk when part
+   of it is left. `halt` cancels the stops of each coin whose close filled
+   and keeps those of a coin whose close failed.
+7. **Pinned endpoints.** hl-guard posts only to the pinned Hyperliquid URL of
    the configured network. Mainnet needs the policy, a mode file in the data
    dir and a start flag to agree.
 
 ## What is not protected
 
-- **No stop-loss or take-profit on the exchange.** The gate requires a
-  stop-loss price on every entry and checks it, but hl-guard does not place
-  stop-loss or take-profit orders. A filled position has no stop on the
-  exchange until you place one. With `approval: never` or
-  `{above_usd: N}`, entries go out with no person in the loop and no stop on
-  the exchange, and `hl-guard serve` warns about it at start.
+- **A shrink and a close that both fail.** If hl-guard cannot shrink the
+  stop and the reduce-only close of the lot is refused too, the lot stays
+  open without a stop. The answer warns, and the warning names what is
+  left.
+- **An unclear answer to an entry with stops.** A missed Ioc entry is
+  refused, and its stops are never placed (testnet-confirmed). hl-guard reads
+  the open orders once to make sure; if a stop of the refused entry is
+  listed, or the read fails, it treats the answer as unknown and writes the
+  `HALT` file. Any other answer shape it does not know sets HALT too. Check
+  `open_orders` and `positions` before you remove the `HALT` file.
+- **The crash window.** hl-guard shrinks the stop right after a partial
+  fill. If the server stops between the fill and the shrink, it fixes the
+  stop on its next start or next write call. Until then the stop is the
+  ordered size, larger than the lot. It is reduce-only, so it never opens a
+  position, but it can sell coins you hold on the same side.
+- **A close in the app.** If you close hl-guard's lot in the Hyperliquid
+  app, its stops stay live at their size against your remaining coins.
+  Hyperliquid cancels them only when the position reaches zero. `positions`
+  warns when an hl-guard stop is larger than hl-guard's own lot, that is its
+  own net fills capped by the position. When you hold coins on the same side,
+  hl-guard cannot tell your coins from its own, and no warning shows. Cancel
+  such stops in the app.
+- **You change the stop in the app.** hl-guard finds the stop by its cloid
+  and records what it finds: a new oid, a cancel or a fill. No testnet run
+  showed whether an edit in the app keeps the cloid. If the stop is then
+  larger than hl-guard's lot, hl-guard cannot shrink it, since the signer
+  only lets a stop get smaller than its recorded size: on the next write
+  call it cancels the stop, closes the lot reduce-only and warns.
+- **No person in the loop.** With `approval: never` or `{above_usd: N}`,
+  entries go out with no person in the loop, and `hl-guard serve` warns about
+  it at start.
 - **A client with a shell tool.** An MCP client that can run commands as your
   user, such as a coding agent with a terminal, can start `hl-guard approve`
   in a pseudo-terminal and type `yes`, so it can approve its own proposal.
@@ -97,6 +142,9 @@ that the client cannot reach.
 | Prompt injection asks the model to "send all funds to 0x…" | No tool can express it. No action type exists for it. |
 | The model opens the largest allowed size many times | Total exposure, open orders, entries per day and the cooldown cap it. |
 | The model churns positions to burn fees | Cooldown, entries per day, the loss streak and the daily-loss latch cap it. Residual: fees up to the daily loss allowance. |
+| The model sets the stop-loss on the profit side, so it fires at once | The gate rejects a stop-loss that is not on the loss side of both the limit and a fresh mark. The signer also refuses a grouped entry whose stop-loss trigger is on the profit side of the entry price. |
+| The model enters against your open position | `opposite_position` rejects an entry on the other side of a held position, where the reduce-only stops would protect nothing. |
+| The model sends a modify to move or grow a stop | The signer builds a `batchModify` only to shrink a stop that the ledger records, with everything but the size unchanged. |
 | The model asks for more leverage | An entry above `leverage_max` is rejected. Entries are isolated only. |
 | The model claims "the user approved this" | Only `hl-guard approve` in a terminal approves. Words in the chat do not. |
 | The model tries to edit the policy through another tool, such as a filesystem MCP server | Keep the policy outside any folder such a tool can write; the docs use `~/.config/hl-guard/`. hl-guard refuses a policy that group or others can write. A change applies only after a restart, which you see. Residual: a tool with write access to that path. |

@@ -18,7 +18,7 @@ from hl_guard.server.snapshot import fold_ledger
 from hl_guard.server.tools_write import ENTRY_FIXED_WEIGHT, FILLS_PAGE_WEIGHT, write_weight_floor
 from server.conftest import Clock
 from server.fake_info import ROOT, Answer, write_config
-from server.test_tools_write import BTC, _status_of, approve, records, session
+from server.test_tools_write import BTC, _status_of, approve, records, rest, session
 from server.venue import Venue, configure
 
 ETH = {"coin": "ETH", "side": "buy", "size": "0.005", "limit_px": "2379.6", "stop_loss_px": "2350"}
@@ -39,8 +39,8 @@ def unhalt(config: Path) -> Any:
 def test_a_resting_fill_learned_later_is_booked(
     config: Path, venue: Venue, clock: Clock, gap_s: int
 ) -> None:
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     clock.advance(30)
     venue.fill_resting(order["oid"])
     clock.advance(gap_s)
@@ -54,9 +54,9 @@ def test_a_resting_fill_learned_later_is_booked(
 def test_the_entry_fill_learned_later_keeps_the_close_a_close(
     config: Path, venue: Venue, clock: Clock, gap_s: int
 ) -> None:
-    session(config, ("propose_order", RESTING_BTC), approve(config))
+    session(config, rest(RESTING_BTC))
     clock.advance(30)
-    venue.fill_resting(venue.orders[0]["oid"])
+    venue.fill_resting(venue.resting()[0]["oid"])
     clock.advance(gap_s)
 
     session(config, ("propose_order", ETH), ("close_position", {"coin": "BTC"}))
@@ -87,8 +87,8 @@ def test_a_lost_answer_resolved_later_books_its_fill(
 def test_a_fill_record_carries_the_exchange_fill_time(
     config: Path, venue: Venue, clock: Clock
 ) -> None:
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    venue.fill_resting(venue.orders[0]["oid"])
+    session(config, rest(RESTING_BTC))
+    venue.fill_resting(venue.resting()[0]["oid"])
     filled_at = venue.fills[0]["time"]
     clock.advance(600)
 
@@ -108,8 +108,8 @@ def test_fills_beyond_one_page_are_read_page_by_page(
 ) -> None:
     monkeypatch.setattr(fills_module, "FILLS_PAGE_ROWS", 5)
     venue.page_rows = 5
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     clock.advance(60)
     venue.fill_resting(order["oid"], "0.0001")
     _ui_fills(venue, 12, venue.fills[-1]["time"] - 30_000)
@@ -147,8 +147,8 @@ def test_fills_beyond_a_minutes_budget_are_read_on_over_the_next_minutes(
     tmp_path: Path, durable: None, venue: Venue, clock: Clock, per_min: int, others: int
 ) -> None:
     config = configure(tmp_path, weight=per_min)
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     clock.advance(60)
     venue.fill_resting(order["oid"], "0.0001")
     _others(venue, others, venue.fills[-1]["time"] + 1)
@@ -170,8 +170,8 @@ def test_a_read_for_one_order_leaves_an_older_orders_unread_fills_to_find(
     config: Path, venue: Venue, clock: Clock
 ) -> None:
     session(config, ("propose_order", ETH), approve(config))
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (older,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (older,) = venue.resting()
     clock.advance(600)
     venue.fill_resting(older["oid"], "0.0001")
     clock.advance(600)
@@ -225,8 +225,8 @@ def test_an_entry_is_evaluated_once_its_fills_are_read_whatever_the_book_needs_a
     tmp_path: Path, durable: None, venue: Venue, clock: Clock, per_min: int, ui: int, answer: str
 ) -> None:
     config = configure(tmp_path, weight=per_min, policy={"entries_per_day_max": "5"})
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     clock.advance(60)
     venue.fill_resting(order["oid"], "0.0001")
     for coin in UI_COINS[:ui]:
@@ -249,8 +249,8 @@ def test_the_widest_book_the_policy_allows_is_evaluated_at_its_floor(
     config.write_text(
         config.read_text().replace("info_weight_per_min: 600", f"info_weight_per_min: {floor}")
     )
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     clock.advance(60)
     venue.fill_resting(order["oid"], "0.0001")
     for coin in UI_COINS[:6]:
@@ -283,8 +283,8 @@ def test_a_book_wider_than_the_floor_is_priced_for_is_rejected_before_its_reads(
 def test_a_long_resting_order_that_part_fills_keeps_booking_its_fills(
     config: Path, venue: Venue, clock: Clock
 ) -> None:
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     clock.advance(8 * fills_module.FILLS_WINDOW_MS / 7000)
     venue.fill_resting(order["oid"], "0.0001")
     clock.advance(60)
@@ -306,9 +306,9 @@ def test_a_close_between_entries_leaves_a_part_filled_entry_to_the_next_entry(
 ) -> None:
     config = configure(tmp_path, policy={"entries_per_day_max": "5"})
     venue.leverage["SOL"] = ("isolated", 1)
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    session(config, ("propose_order", {**RESTING_SOL, "limit_px": "103.62"}), approve(config))
-    (resting,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    session(config, rest({**RESTING_SOL, "limit_px": "103.62"}))
+    (resting,) = venue.resting()
     clock.advance(60)
     venue.fill_resting(resting["oid"], "0.0001")
     clock.advance(60)
@@ -341,14 +341,14 @@ def test_an_entry_is_evaluated_after_the_catch_up_and_each_own_fill_is_booked_on
     own = rng.randint(0, 2)
     for proposal in [RESTING_BTC, RESTING_SOL][:own]:
         _fresh_minute(config)
-        session(config, ("propose_order", proposal), approve(config))
-    oids = [o["oid"] for o in venue.orders]
+        session(config, rest(proposal))
+    oids = [o["oid"] for o in venue.resting()]
     ui = rng.randint(0, 3 - own)
     for coin in UI_COINS[:ui]:
         _ui_resting(venue, coin)
     clock.advance(60)
     for oid in oids:
-        size = next(o["s"] for o in venue.orders if o["oid"] == oid)
+        size = next(o["s"] for o in venue.resting() if o["oid"] == oid)
         venue.fill_resting(oid, rng.choice([None, str(Decimal(size) / 2)]))
         clock.advance(rng.randint(1, 600))
     others = rng.choice([0, rng.randint(1, 9999), 9999])
@@ -357,10 +357,10 @@ def test_an_entry_is_evaluated_after_the_catch_up_and_each_own_fill_is_booked_on
     clock.advance(others / 100 + 60)
     pages = len(venue.fills) // fills_module.FILLS_PAGE_ROWS + 1
     bound = math.ceil(pages / ((per_min - ENTRY_FIXED_WEIGHT) // FILLS_PAGE_WEIGHT)) + 1
-    opening = len(venue.orders)
+    opening = len(venue.resting())
 
     first = _evaluated_within(config, bound)
-    for oid in [o["oid"] for o in venue.orders if o["oid"] in oids]:
+    for oid in [o["oid"] for o in venue.resting() if o["oid"] in oids]:
         venue.fill_resting(oid)
     clock.advance(61)
     second = _evaluated_within(config, bound)
@@ -400,8 +400,8 @@ def test_write_tools_refuse_a_weight_below_one_entry_and_one_fills_page(
 def test_an_order_whose_fills_never_show_is_given_up_with_a_latch(
     config: Path, venue: Venue, clock: Clock
 ) -> None:
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     venue.fill_resting(order["oid"])
     venue.fills.clear()
     clock.advance(fills_module.FILLS_WINDOW_MS / 1000 + 3600)
@@ -425,8 +425,8 @@ def test_an_order_whose_fills_never_show_is_given_up_with_a_latch(
 def test_a_resting_order_whose_fill_row_lags_its_status_is_booked_not_given_up(
     config: Path, venue: Venue, clock: Clock, age_days: int
 ) -> None:
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     clock.advance(age_days * 86_400)
     venue.fill_resting(order["oid"])
     venue.fills_lag = 1
@@ -444,8 +444,8 @@ def test_a_resting_order_whose_fill_row_lags_its_status_is_booked_not_given_up(
 def test_an_order_inside_the_window_is_not_given_up_while_its_fills_stay_missing(
     config: Path, venue: Venue, clock: Clock
 ) -> None:
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     clock.advance(86_400)
     venue.fill_resting(order["oid"])
     venue.fills.clear()
@@ -461,8 +461,8 @@ def test_an_order_inside_the_window_is_not_given_up_while_its_fills_stay_missing
 def test_an_old_order_cancelled_after_a_lost_part_fill_is_given_up_from_the_cancel(
     config: Path, venue: Venue, clock: Clock
 ) -> None:
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     venue.fill_resting(order["oid"], "0.0001")
     venue.fills.clear()
     clock.advance(fills_module.FILLS_WINDOW_MS / 1000 + 3600)
@@ -479,8 +479,8 @@ def test_an_order_whose_fills_never_show_is_given_up_after_pages_over_minutes(
     tmp_path: Path, durable: None, venue: Venue, clock: Clock
 ) -> None:
     config = configure(tmp_path, weight=300)
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     venue.fill_resting(order["oid"])
     clock.advance(fills_module.FILLS_WINDOW_MS / 1000 + 3600)
     now = time.time_ns() // 1_000_000
@@ -531,8 +531,8 @@ def test_the_expiry_follows_the_clock_when_the_ledger_nonce_is_ahead(
 def _lost_then(config: Path, venue: Venue) -> None:
     venue.leverage["BTC"] = ("isolated", 1)
     venue.hold = True
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    assert venue.held and not venue.orders
+    session(config, rest(RESTING_BTC))
+    assert venue.held and not venue.resting()
 
 
 def test_a_lost_order_is_not_failed_while_its_post_can_still_land(
@@ -543,7 +543,7 @@ def test_a_lost_order_is_not_failed_while_its_post_can_still_land(
     session(config, unhalt(config), ("propose_order", ETH))
     clock.advance(5)
     venue.land()
-    (order,) = venue.orders
+    (order,) = venue.resting()
 
     session(config, unhalt(config), ("propose_order", ETH))
 
@@ -563,14 +563,14 @@ def test_a_lost_order_past_its_expiry_is_failed_and_cannot_land(
 
     failed = [r.payload for r in records(config) if r.payload.get("cloids")]
     assert [(f["outcome"], f["rule"]) for f in failed] == [("failed", "exchange")]
-    assert venue.orders == [] and venue.positions == {}
+    assert venue.resting() == [] and venue.positions == {}
 
 
 def test_an_order_the_book_read_misses_but_order_status_calls_resting_is_kept(
     config: Path, venue: Venue, clock: Clock
 ) -> None:
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     venue.hidden.add(order["oid"])
     session(config, ("propose_order", ETH))
     venue.hidden.clear()
@@ -590,9 +590,9 @@ def _lost_entry(tmp_path: Path, venue: Venue) -> tuple[Path, dict[str, Any]]:
         return (500, b"upstream", {}) if body["action"]["type"] == "order" else None
 
     venue.answer_after = lost
-    session(config, ("propose_order", RESTING_BTC), autonomous=True)
+    session(config, rest(RESTING_BTC), autonomous=True)
     venue.answer_after = None
-    (order,) = venue.orders
+    (order,) = venue.resting()
     return config, order
 
 
@@ -633,7 +633,7 @@ def test_a_lost_entry_that_landed_and_was_cancelled_unfilled_still_counts(
         autonomous=True,
     )
 
-    assert venue.orders == []
+    assert venue.resting() == []
     assert out[2][1]["rule"] == "entries_per_day_max"
     assert not [r for r in records(config) if r.payload.get("cloids")]
     outcomes = [r.payload.get("outcome") for r in records(config) if r.kind is Kind.DECISION]
@@ -644,7 +644,7 @@ def test_a_lost_entry_the_exchange_reports_rejected_stops_counting(
     tmp_path: Path, durable: None, venue: Venue, clock: Clock
 ) -> None:
     config, order = _lost_entry(tmp_path, venue)
-    venue.orders.clear()
+    venue.resting().clear()
     venue.by_cloid[order["c"]]["status"] = "perpMarginRejected"
     clock.advance(60)
 
@@ -676,8 +676,8 @@ def _more_fills_at_one_ms_than_a_page(
 def test_a_filled_close_whose_fills_cannot_be_read_still_answers_placed(
     config: Path, venue: Venue, clock: Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     clock.advance(60)
     venue.fill_resting(order["oid"], "0.0001")
     clock.advance(60)
@@ -715,9 +715,9 @@ def test_a_lost_order_that_part_filled_before_it_was_resolved_books_every_fill(
         return (500, b"upstream", {}) if body["action"]["type"] == "order" else None
 
     venue.answer_after = lost
-    session(config, ("propose_order", RESTING_BTC), approve(config))
+    session(config, rest(RESTING_BTC))
     venue.answer_after = None
-    (order,) = venue.orders
+    (order,) = venue.resting()
     clock.advance(600)
     venue.fill_resting(order["oid"], "0.0001")
     clock.advance(7200)
@@ -736,8 +736,8 @@ def test_fills_at_one_ms_across_a_page_boundary_are_booked_once_each(
 ) -> None:
     monkeypatch.setattr(fills_module, "FILLS_PAGE_ROWS", 5)
     venue.page_rows = 5
-    session(config, ("propose_order", RESTING_BTC), approve(config))
-    (order,) = venue.orders
+    session(config, rest(RESTING_BTC))
+    (order,) = venue.resting()
     clock.advance(60)
     for _ in range(4):
         venue.fill_resting(order["oid"], "0.00001")

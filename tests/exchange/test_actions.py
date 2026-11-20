@@ -21,6 +21,7 @@ from hl_guard.exchange.actions import (
 
 ALLOWED = {
     "order",
+    "batchModify",
     "cancel",
     "cancelByCloid",
     "scheduleCancel",
@@ -29,7 +30,7 @@ ALLOWED = {
 }
 
 
-def test_allowed_action_types_are_the_six_trade_verbs() -> None:
+def test_allowed_action_types_are_the_seven_trade_verbs() -> None:
     assert ALLOWED_ACTION_TYPES == ALLOWED
 
 
@@ -114,7 +115,7 @@ def test_every_type_on_the_docs_page_is_allowed_or_forbidden() -> None:
     source = f"{DOCS_SNAPSHOT_URL} fetched {DOCS_SNAPSHOT_FETCHED}"
     assert DOCS_SNAPSHOT_TYPES <= DOCUMENTED_ACTION_TYPES, source
     assert DOCS_SNAPSHOT_TYPES - ALLOWED_ACTION_TYPES <= FORBIDDEN_ACTION_TYPES, source
-    assert "batchModify" in FORBIDDEN_ACTION_TYPES
+    assert "batchModify" in ALLOWED_ACTION_TYPES
 
 
 def test_modify_refused_until_sdk_conflict_resolved() -> None:
@@ -340,7 +341,7 @@ def _order_payload(**over: Any) -> dict[str, Any]:
 
 
 def test_order_with_tpsl_grouping_is_rejected() -> None:
-    with pytest.raises(ActionConstructionError, match="grouping"):
+    with pytest.raises(ActionConstructionError, match=r"\[entry, sl\]"):
         build_action("order", payload=_order_payload(grouping="normalTpsl"))
     with pytest.raises(ActionConstructionError, match="grouping"):
         build_action("order", payload=_order_payload(grouping="positionTpsl"))

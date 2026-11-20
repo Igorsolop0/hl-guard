@@ -98,12 +98,18 @@ uv run hl-guard latch clear ~/.hl-guard/ledger.jsonl
 
 The gate rejects an entry whose stop-loss is missing, on the wrong side of
 the limit and the mark, too far away, or past the price at which the exchange
-would liquidate the position.
+would liquidate the position. It also rejects an entry against an open
+position on the other side of the same coin (`opposite_position`): the stops
+are reduce-only and would protect nothing.
 
 > [!IMPORTANT]
-> hl-guard checks the stop-loss and take-profit prices, records them in the
-> ledger and shows them when you approve. It does **not** place them on the
-> exchange. Place the stop yourself after the entry fills.
+> hl-guard sends the stop-loss, and the take-profit if you named one, with
+> the entry as reduce-only market triggers on the exchange, sized to the
+> filled lot. An entry is therefore Ioc only. hl-guard shrinks the stop right
+> after a partial fill. If the server stops between the fill and the shrink,
+> it fixes the stop on its next start or next write call. Hyperliquid does
+> not check the side of a stop, so this gate check is what keeps a stop-loss
+> from firing at once.
 
 ### Prices and freshness
 
@@ -117,6 +123,11 @@ would liquidate the position.
 Closes skip the price band, so a close passes even when the mark lags. A
 close is a reduce-only Ioc order at the floor or the cap. A tight floor or cap
 can refuse a close in a fast market until the mark catches up.
+
+The exchange can refuse a close with the error "Price too far from oracle".
+Then the `close_position` answer is `rejected` and says so, nothing was
+closed, and the stops stay on the exchange. `halt` keeps HALT set and lists
+the coin under `refused` and `unfinished`.
 
 ### Limits for actions that no tool sends yet
 
@@ -156,9 +167,9 @@ uv run hl-guard reject PROPOSAL_ID --config ~/.config/hl-guard/serve.yaml
 running server checks the entry against the policy again with a fresh account
 read before it sends it.
 
-With `{above_usd: N}` or `never`, entries go out with no person in the loop
-and with no stop on the exchange. `hl-guard serve` prints a warning that says
-so when it starts.
+With `{above_usd: N}` or `never`, entries go out with no person in the loop.
+Each still carries its stop-loss on the exchange. `hl-guard serve` prints a
+warning that says so when it starts.
 
 ## The serve config
 

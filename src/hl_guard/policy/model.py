@@ -280,6 +280,7 @@ class Rule(StrEnum):
     COOLDOWN_S = "cooldown_s"
     ENTRIES_PER_DAY_MAX = "entries_per_day_max"
     REDUCE_ONLY = "reduce_only"
+    OPPOSITE_POSITION = "opposite_position"
     SCHEDULE_CANCEL = "schedule_cancel"
     ADD_MARGIN = "add_margin"
     MARGIN_ADDITIONS_PER_DAY_MAX = "margin_additions_per_day_max"

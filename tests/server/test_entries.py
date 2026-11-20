@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from hl_guard.ledger.ledger import Kind, Ledger
 from hl_guard.server.snapshot import fold_ledger
 from server.conftest import Clock
-from server.test_tools_write import BTC, approve, records, session
+from server.fake_info import Answer
+from server.test_tools_write import BTC, records, rest, session
 from server.venue import Venue, configure
 
 RESTING_BTC = {**BTC, "limit_px": "81000"}
@@ -43,9 +46,9 @@ def test_resting_entries_count_toward_entries_per_day_when_placed(
 
     out = session(
         config,
-        ("propose_order", RESTING_BTC),
-        ("propose_order", RESTING_ETH),
-        ("propose_order", RESTING_SOL),
+        rest(RESTING_BTC),
+        rest(RESTING_ETH),
+        rest(RESTING_SOL),
         autonomous=True,
     )
 
@@ -62,11 +65,11 @@ def test_a_second_resting_entry_on_a_coin_waits_for_its_cooldown(
 
     out = session(
         config,
-        ("propose_order", RESTING_BTC),
+        rest(RESTING_BTC),
         lambda w, o: clock.advance(1800),
-        ("propose_order", RESTING_BTC),
+        rest(RESTING_BTC),
         lambda w, o: clock.advance(1801),
-        ("propose_order", RESTING_BTC),
+        rest(RESTING_BTC),
         autonomous=True,
     )
 
@@ -81,9 +84,9 @@ def test_a_cancelled_unfilled_entry_still_counts(
 
     out = session(
         config,
-        ("propose_order", RESTING_BTC),
+        rest(RESTING_BTC),
         lambda w, o: w.cancel({"coin": "BTC", "oid": venue.orders[0]["oid"]}),
-        ("propose_order", RESTING_BTC),
+        rest(RESTING_BTC),
         autonomous=True,
     )
 
@@ -96,19 +99,20 @@ def test_an_entry_the_exchange_refused_does_not_count(
 ) -> None:
     config = never(tmp_path, entries_per_day_max="5")
 
-    out = session(
-        config,
-        ("propose_order", {**BTC, "tif": "Ioc", "limit_px": "81000"}),
-        ("propose_order", RESTING_BTC),
-        autonomous=True,
-    )
+    def refuse_once(body: dict[str, Any]) -> Answer | None:
+        venue.answer_after = None
+        return 200, json.dumps({"status": "err", "response": "Insufficient margin"}).encode(), {}
+
+    venue.leverage["BTC"] = ("isolated", 1)
+    venue.answer_after = refuse_once
+    out = session(config, ("propose_order", BTC), ("propose_order", BTC), autonomous=True)
 
     assert out[0][1]["rule"] == "exchange"
     assert out[1][1]["result"] == "placed"
 
 
 def test_risk_status_counts_a_resting_entry_and_its_cooldown(config: Path, venue: Venue) -> None:
-    out = session(config, ("propose_order", RESTING_BTC), approve(config), ("risk_status", {}))
+    out = session(config, rest(RESTING_BTC), ("risk_status", {}))
 
     status = out[-1][1]
     assert status["entries_today"]["count"] == 1

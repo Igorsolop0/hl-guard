@@ -1,6 +1,14 @@
 """A small Hyperliquid stand-in for the write path: one account, marks you set,
 orders that fill at the mark when they cross it, and the /info reads that
-follow from that state."""
+follow from that state.
+
+A normalTpsl entry behaves as testnet showed on 2026-11-19: its children rest
+as reduce-only triggers at the full ordered size even after a partial fill,
+with their own oids and no oid in the ack; they are one-cancels-other; a
+batchModify by cloid cancels and replaces them under new oids; and orderStatus
+by cloid then answers with the old, cancelled order. An Ioc parent that does
+not fill answers one error slot for the whole group, its status is
+iocCancelRejected and its children are never placed (T9, 2026-11-20)."""
 
 from __future__ import annotations
 
@@ -64,6 +72,9 @@ class Venue:
     hidden: set[int] = field(default_factory=set)
     held: list[dict[str, Any]] = field(default_factory=list)
     bodies: list[dict[str, Any]] = field(default_factory=list)
+    liquidity: dict[str, Decimal] = field(default_factory=dict)
+    by_oid: dict[int, dict[str, Any]] = field(default_factory=dict)
+    modify_override: Callable[[dict[str, Any]], Answer] | None = None
 
     def __post_init__(self) -> None:
         meta, ctxs = json.loads(recorded("metaAndAssetCtxs"))
@@ -121,29 +132,30 @@ class Venue:
         return 200, json.dumps(state).encode(), {}
 
     def _frontendOpenOrders(self, body: dict[str, Any]) -> Answer:
-        rows = [
-            {
-                "coin": o["coin"],
-                "side": "B" if o["b"] else "A",
-                "limitPx": o["p"],
-                "sz": o["s"],
-                "origSz": o["s"],
-                "oid": o["oid"],
-                "timestamp": o["at"],
-                "reduceOnly": o["r"],
-                "orderType": "Limit",
-                "tif": o["tif"],
-                "isTrigger": False,
-                "triggerPx": "0.0",
-                "cloid": o["c"],
-                "children": [],
-                "isPositionTpsl": False,
-                "triggerCondition": "N/A",
-            }
-            for o in self.orders
-            if o["oid"] not in self.hidden
-        ]
+        rows = [self._row(o) for o in self.orders if o["oid"] not in self.hidden]
         return 200, json.dumps(rows).encode(), {}
+
+    def _row(self, o: dict[str, Any]) -> dict[str, Any]:
+        trigger = o.get("trigger")
+        kind = {"sl": "Stop Market", "tp": "Take Profit Market"}
+        return {
+            "coin": o["coin"],
+            "side": "B" if o["b"] else "A",
+            "limitPx": o["p"],
+            "sz": o["s"],
+            "origSz": o["s"],
+            "oid": o["oid"],
+            "timestamp": o["at"],
+            "reduceOnly": o["r"],
+            "orderType": kind[trigger["tpsl"]] if trigger else "Limit",
+            "tif": None if trigger else o["tif"],
+            "isTrigger": trigger is not None,
+            "triggerPx": trigger["triggerPx"] if trigger else "0.0",
+            "cloid": o["c"],
+            "children": [],
+            "isPositionTpsl": False,
+            "triggerCondition": "N/A",
+        }
 
     def _activeAssetData(self, body: dict[str, Any]) -> Answer:
         coin = body["coin"]
@@ -167,7 +179,8 @@ class Venue:
 
     def _orderStatus(self, body: dict[str, Any]) -> Answer:
         asked = body["oid"]
-        known = next(
+        known = self.by_oid.get(asked) if isinstance(asked, int) else None
+        known = known or next(
             (k for c, k in self.by_cloid.items() if asked in (c, k["oid"])),
             None,
         )
@@ -221,7 +234,7 @@ class Venue:
     def _order(self, wire: dict[str, Any]) -> Any:
         coin = self.names[wire["a"]]
         px, size, is_buy = Decimal(wire["p"]), Decimal(wire["s"]), wire["b"]
-        tif = wire["t"]["limit"]["tif"]
+        tif = wire["t"].get("limit", {}).get("tif")
         held = self.positions.get(coin)
         if wire["r"] and (held is None or (held.size > 0) == is_buy or size > abs(held.size)):
             return {"error": "Reduce only order would increase position."}
@@ -234,9 +247,11 @@ class Venue:
         known = {"coin": coin, "oid": oid, "origSz": _s(size), "sz": _s(size), "status": "open"}
         self.by_cloid[wire["c"]] = known
         if crosses:
-            avg = self._fill(coin, is_buy, size, oid)
-            known |= {"sz": "0.0", "status": "filled"}
-            return {"filled": {"totalSz": _s(size), "avgPx": _s(avg), "oid": oid}}
+            part = min(size, self.liquidity.get(coin, size))
+            avg = self._fill(coin, is_buy, part, oid)
+            known |= {"sz": _s(size - part), "status": "filled"}
+            self._drop_orphans(coin)
+            return {"filled": {"totalSz": _s(part), "avgPx": _s(avg), "oid": oid}}
         if tif == "Ioc":
             known["status"] = "canceled"
             text = "Order could not immediately match against any resting orders."
@@ -258,17 +273,119 @@ class Venue:
         late = None if self.answer_after is None else self.answer_after(body)
         return done if late is None else late
 
+    def _grouped(self, wires: list[dict[str, Any]]) -> list[Any]:
+        parent = self._order(wires[0])
+        if "filled" not in parent:
+            self.by_cloid[wires[0]["c"]]["status"] = "iocCancelRejected"
+            return [parent]
+        for w in wires[1:]:
+            self.next_oid += 1
+            coin = self.names[w["a"]]
+            child = {**w, "coin": coin, "oid": self.next_oid, "tif": None, "at": _now_ms()}
+            child |= {"trigger": w["t"]["trigger"], "parent": wires[0]["c"]}
+            self.orders.append(child)
+            self.by_cloid[w["c"]] = {
+                "coin": coin,
+                "oid": child["oid"],
+                "origSz": w["s"],
+                "sz": w["s"],
+                "status": "open",
+            }
+        return [parent, *("waitingForTrigger" for _ in wires[1:])]
+
+    def _modify(self, m: dict[str, Any]) -> Any:
+        cloid, order = m["oid"], m["order"]
+        found = [o for o in self.orders if o["c"] == cloid and o.get("trigger")]
+        if not found:
+            return {"error": "Cannot modify canceled or filled order"}
+        (old,) = found
+        self.by_cloid[cloid]["status"] = "canceled"
+        old_record = self.by_oid.get(old["oid"])
+        if old_record is not None:
+            old_record["status"] = "canceled"
+        self.next_oid += 1
+        new = {**old, "s": order["s"], "oid": self.next_oid, "at": _now_ms()}
+        self.orders[self.orders.index(old)] = new
+        self.by_oid[new["oid"]] = {
+            "coin": old["coin"],
+            "oid": new["oid"],
+            "origSz": order["s"],
+            "sz": order["s"],
+            "status": "open",
+        }
+        return {"resting": {"oid": new["oid"], "cloid": cloid}}
+
+    def _record_of(self, o: dict[str, Any]) -> dict[str, Any]:
+        return self.by_oid.get(o["oid"]) or self.by_cloid[o["c"]]
+
+    def _drop_orphans(self, coin: str) -> None:
+        if coin in self.positions:
+            return
+        for o in [o for o in self.orders if o["coin"] == coin and o.get("trigger")]:
+            self.orders.remove(o)
+            self._record_of(o)["status"] = "reduceOnlyCanceled"
+
+    def trigger(self, coin: str) -> list[int]:
+        """Fire every child whose trigger the mark crossed, one per entry; its
+        sibling ends siblingFilledCanceled."""
+        fired: list[int] = []
+        mark = self.marks[coin]
+        for o in [o for o in self.orders if o["coin"] == coin and o.get("trigger")]:
+            if o not in self.orders:
+                continue
+            px, sells = Decimal(o["trigger"]["triggerPx"]), not o["b"]
+            below = o["trigger"]["tpsl"] == "sl" if sells else o["trigger"]["tpsl"] == "tp"
+            if not (mark <= px if below else mark >= px):
+                continue
+            held = self.positions.get(coin)
+            self.orders.remove(o)
+            record = self._record_of(o)
+            if held is None or (held.size > 0) == o["b"]:
+                record["status"] = "reduceOnlyCanceled"
+                continue
+            size = min(Decimal(o["s"]), abs(held.size))
+            self._fill(coin, o["b"], size, o["oid"])
+            record |= {"sz": _s(Decimal(o["s"]) - size), "status": "filled"}
+            fired.append(o["oid"])
+            for sibling in [s for s in self.orders if s.get("parent") == o.get("parent")]:
+                self.orders.remove(sibling)
+                self._record_of(sibling)["status"] = "siblingFilledCanceled"
+            self._drop_orphans(coin)
+        return fired
+
     def _act(self, action: dict[str, Any]) -> Answer:
         match action["type"]:
+            case "order" if action["grouping"] == "normalTpsl":
+                return _ok("order", self._grouped(action["orders"]))
             case "order":
-                return _ok("order", [self._order(w) for w in action["orders"]])
+                placed = [self._order(w) for w in action["orders"]]
+                for w in action["orders"]:
+                    self._drop_orphans(self.names[w["a"]])
+                return _ok("order", placed)
+            case "batchModify":
+                if self.modify_override is not None:
+                    return self.modify_override(action)
+                return _ok("order", [self._modify(m) for m in action["modifies"]])
+            case "cancelByCloid":
+                cancelled: list[Any] = []
+                for c in action["cancels"]:
+                    found = [o for o in self.orders if o["c"] == c["cloid"]]
+                    for o in found:
+                        self.orders.remove(o)
+                        self._record_of(o)["status"] = "canceled"
+                    cancelled.append(
+                        "success"
+                        if found
+                        else {"error": "Order was never placed, already canceled, or filled."}
+                    )
+                return _ok("cancel", cancelled)
             case "cancel":
                 statuses: list[Any] = []
                 for c in action["cancels"]:
                     found = [o for o in self.orders if o["oid"] == c["o"]]
                     self.orders = [o for o in self.orders if o["oid"] != c["o"]]
                     for o in found:
-                        self.by_cloid[o["c"]]["status"] = "canceled"
+                        self._record_of(o)["status"] = "canceled"
                     statuses.append(
                         "success"
                         if found
@@ -284,6 +401,10 @@ class Venue:
                     {},
                 )
         return 200, json.dumps({"status": "err", "response": "unknown action"}).encode(), {}
+
+    def resting(self) -> list[dict[str, Any]]:
+        """The resting limit orders, without the stop children."""
+        return [o for o in self.orders if not o.get("trigger")]
 
     def land(self) -> list[Answer]:
         bodies, self.held, self.hold = self.held, [], False

@@ -1,36 +1,58 @@
 #!/usr/bin/env bash
-# The testnet end-to-end run: the init check, an entry that the policy
-# rejects, an entry that you approve in a second terminal, its fill, a close,
-# and a ledger that verifies with the new records.
+# The testnet end-to-end run: the init check, then one lane, and a ledger that
+# verifies with the new records.
 #
-#   tools/e2e/run.sh --config ~/.config/hl-guard/serve.yaml --out DIR [--coin BTC]
+#   tools/e2e/run.sh --config ~/.config/hl-guard/serve.yaml --out DIR \
+#     [--coin BTC] [--lane basic|tpsl]
+#   tools/e2e/run.sh --dry-run [--lane basic|tpsl]
+#
+# basic: an entry that the policy rejects, an entry that you approve in a
+# second terminal, its fill and a close.
+# tpsl: an entry with a stop-loss and a take-profit that you approve, a check
+# that both stops are live at the filled size, a close, and a check that no
+# stop of the entry and no position is left.
 #
 # DIR gets the transcripts; keep it outside the repository, for example
-# ~/hl-guard-e2e/run-1.
+# ~/hl-guard-e2e/run-1. --dry-run sends nothing and needs no config: it runs
+# the lane's planner and judge offline on a made-up transcript.
 #
 # It refuses to run unless the policy, the data dir mode and the market read
 # all say testnet. It never approves: when the entry waits, approve it with
 # hl-guard approve in a second terminal. The coin must hold no position, since
-# the run closes it. hl-guard places no stop-loss, so the run closes the
-# position right after the fill.
+# the run closes it right after the fill.
 set -euo pipefail
 
 usage() {
-  echo "usage: tools/e2e/run.sh --config SERVE_CONFIG --out DIR [--coin COIN]" >&2
+  echo "usage: tools/e2e/run.sh --config SERVE_CONFIG --out DIR [--coin COIN] [--lane basic|tpsl]" >&2
+  echo "       tools/e2e/run.sh --dry-run [--lane basic|tpsl]" >&2
   exit 2
 }
 
 config=""
 coin="BTC"
 out=""
+lane="basic"
+dry=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --config) config="${2:-}"; shift 2 || usage ;;
     --coin) coin="${2:-}"; shift 2 || usage ;;
     --out) out="${2:-}"; shift 2 || usage ;;
+    --lane) lane="${2:-}"; shift 2 || usage ;;
+    --dry-run) dry=1; shift ;;
     *) usage ;;
   esac
 done
+case "$lane" in
+  basic|tpsl) ;;
+  *) usage ;;
+esac
+if [ "$dry" = 1 ]; then
+  cd "$(dirname "$0")/../.."
+  uv run python tools/e2e/e2e.py selftest --lane "$lane"
+  echo "e2e dry run ($lane): PASS"
+  exit 0
+fi
 [ -n "$config" ] || usage
 [ -n "$coin" ] || usage
 [ -n "$out" ] || usage
@@ -72,11 +94,11 @@ cat > "$out/read.json" <<EOF
  {"tool": "positions", "arguments": {}}]
 EOF
 uv run python tools/drive.py "$out/read.json" -- "${serve[@]}" > "$out/read.txt"
-"${e2e[@]}" scenario --config "$config" --coin "$coin" --transcript "$out/read.txt" \
-  > "$out/scenario.json"
+"${e2e[@]}" scenario --config "$config" --coin "$coin" --lane "$lane" \
+  --transcript "$out/read.txt" > "$out/scenario.json"
 cat "$out/scenario.json"
 
-step "rejected entry, approved entry, fill, close"
+step "lane $lane: entries, approval, fill, close"
 ttl="$(sed -n 's/^approval_ttl_s //p' "$out/preflight.txt")"
 set +e
 uv run python tools/drive.py --timeout "$((ttl + 60))" "$out/scenario.json" -- "${serve[@]}" \
@@ -90,6 +112,6 @@ uv run hl-guard ledger verify "$ledger"
 uv run hl-guard ledger show "$ledger" --last 1000 > "$out/ledger.txt"
 
 step "judge"
-"${e2e[@]}" judge --config "$config" --coin "$coin" --transcript "$out/run.txt" \
-  --ledger-lines "$out/ledger.txt" --after-seq "$after_seq"
+"${e2e[@]}" judge --config "$config" --coin "$coin" --lane "$lane" \
+  --transcript "$out/run.txt" --ledger-lines "$out/ledger.txt" --after-seq "$after_seq"
 echo "e2e: PASS"

@@ -175,6 +175,13 @@ def _check_entry(policy: Policy, account: Account, e: Entry) -> Decision:
     )
     if refused is not None:
         return refused
+    held = account.positions.get(e.coin, Decimal(0))
+    if (held < 0) if e.is_buy else (held > 0):
+        return Rejected(
+            Rule.OPPOSITE_POSITION,
+            f"the account holds {held} {e.coin}; a {'buy' if e.is_buy else 'sell'} entry against "
+            "it would leave its reduce-only stops protecting nothing",
+        )
     asset = account.assets[e.coin]
     if asset.margin_mode != "isolated" or asset.leverage > policy.leverage_max:
         return Rejected(

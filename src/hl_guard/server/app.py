@@ -251,8 +251,8 @@ def startup_lines(runtime: Runtime, writes: bool) -> list[str]:
     ]
     if writes and not isinstance(runtime.policy.approval, ApproveAlways):
         lines.append(
-            f"hl-guard serve: warning: with approval {word}, entries go out without "
-            "exchange-side stops; the stop-loss is checked by the gate, not placed"
+            f"hl-guard serve: warning: with approval {word}, entries go out with no "
+            "person in the loop; each carries its stop-loss on the exchange"
         )
     return lines
 

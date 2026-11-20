@@ -87,6 +87,8 @@ class Kind(StrEnum):
     STATE_CHECKPOINT = "state_checkpoint"
     DAY_START = "day_start"
     FILLS_READ = "fills_read"
+    CHILD = "child"
+    CHILD_RESIZE = "child_resize"
     ERROR = "error"
 
 
